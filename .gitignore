@@ -25,4 +25,9 @@ TestResults.xml
 *.o
 *.gb
 *.sym
+*.map
+*.sav
+*.noi
 gbdk/
+build/
+*.ihx
