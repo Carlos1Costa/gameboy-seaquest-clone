@@ -33,7 +33,8 @@ ROMFLAGS = -Wm-yn"SEAQUEST"
 # keeps duplicate/empty tiles, so a 16x8 entity is always exactly 2 tiles);
 # the game writes them to OAM directly. Tileset PNGs become raw tile strips
 # whose tile order matches the image left to right.
-SPRITE_PNGS  = res/player_sub.png res/torpedo.png res/shark.png res/enemy_sub.png res/diver.png
+SPRITE_PNGS  = res/player_sub.png res/torpedo.png res/shark.png res/enemy_sub.png res/diver.png \
+               res/explosion.png
 TILESET_PNGS = res/hud_tiles.png
 
 ASSET_SOURCES = $(patsubst res/%.png,$(ASSETDIR)/%.c,$(SPRITE_PNGS) $(TILESET_PNGS))

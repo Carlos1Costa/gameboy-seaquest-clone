@@ -63,7 +63,14 @@ enum PlayerTuning {
     PLAYER_MAX_Y   = ROW_SEABED * 8 - PLAYER_HEIGHT,
 
     PLAYER_START_X = (SCREEN_PX_WIDTH - PLAYER_WIDTH) / 2,
-    PLAYER_START_Y = PLAYER_MIN_Y
+    PLAYER_START_Y = PLAYER_MIN_Y,
+
+    /*
+     * The sub counts as submerged once its hull is fully under the waterline
+     * (PLAYER_MIN_Y is the surface). Coming back to PLAYER_MIN_Y after that is
+     * a surfacing; wiggling near the surface is not.
+     */
+    PLAYER_SUBMERGED_Y = PLAYER_MIN_Y + PLAYER_HEIGHT
 };
 
 /*
@@ -134,8 +141,14 @@ enum RulesTuning {
     MAX_RESERVES        = 6,
 
     /* One bar tile per 8 units so the bar can later get sub-tile precision. */
-    OXYGEN_MAX          = OXYGEN_BAR_TILES * 8,
-    OXYGEN_DRAIN_FRAMES = 10                  /* frames per unit: full tank ~16 s */
+    OXYGEN_MAX                = OXYGEN_BAR_TILES * 8,
+    OXYGEN_DRAIN_FRAMES       = 10,           /* frames per unit: full tank ~16 s */
+    OXYGEN_REFILL_PER_FRAME   = 1,            /* empty to full in ~1.6 s */
+    OXYGEN_LOW                = 2 * 8,        /* last 2 bar tiles: the bar blinks */
+    OXYGEN_ALARM_BLINK_FRAMES = 8,            /* frames on, then frames off */
+
+    DEATH_FRAMES              = 90,           /* explosion length, world frozen */
+    EXPLOSION_BLINK_FRAMES    = 4
 };
 
 /*
@@ -162,10 +175,19 @@ typedef struct {
     uint8_t pressed;   /* buttons that went down this frame */
 } InputState;
 
+typedef enum {
+    PLAYER_REFILLING,  /* at the surface, frozen until the tank is full */
+    PLAYER_ACTIVE,
+    PLAYER_DYING       /* exploding; the whole world waits */
+} PlayerState;
+
 typedef struct {
     Fixed x;
     Fixed y;
     uint8_t facing_left;
+    PlayerState state;
+    uint8_t state_timer;   /* frames left in PLAYER_DYING */
+    uint8_t submerged;     /* has dived since the last surfacing */
 } Player;
 
 typedef struct {
@@ -232,6 +254,7 @@ typedef struct {
     uint8_t oxygen_drain_timer;
     uint8_t divers;
     uint8_t reserves;
+    uint8_t wave;             /* surfacings with a full load; drives difficulty (E1.4) */
     HudCache hud;
 } GameState;
 

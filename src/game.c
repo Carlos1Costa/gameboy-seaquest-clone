@@ -8,6 +8,7 @@
 #include "shark.h"
 #include "enemy_sub.h"
 #include "diver.h"
+#include "explosion.h"
 #include "hud_tiles.h"
 
 /* First VRAM tile of each sprite sheet. */
@@ -16,7 +17,8 @@ enum SpriteTile {
     SPRITE_TILE_TORPEDO    = SPRITE_TILE_PLAYER_SUB + player_sub_TILE_COUNT,
     SPRITE_TILE_SHARK      = SPRITE_TILE_TORPEDO + torpedo_TILE_COUNT,
     SPRITE_TILE_ENEMY_SUB  = SPRITE_TILE_SHARK + shark_TILE_COUNT,
-    SPRITE_TILE_DIVER      = SPRITE_TILE_ENEMY_SUB + enemy_sub_TILE_COUNT
+    SPRITE_TILE_DIVER      = SPRITE_TILE_ENEMY_SUB + enemy_sub_TILE_COUNT,
+    SPRITE_TILE_EXPLOSION  = SPRITE_TILE_DIVER + diver_TILE_COUNT
 };
 
 /*
@@ -74,25 +76,29 @@ static void reset_lanes(GameState *game) {
     }
 }
 
-static void reset_player(GameState *game) {
-    game->player.x = pixel_to_fixed(PLAYER_START_X);
-    game->player.y = pixel_to_fixed(PLAYER_START_Y);
-    game->player.facing_left = 0;
+/* Every life starts at the surface with an empty tank, frozen until it fills (as in the original). */
+static void respawn_player(GameState *game) {
+    Player *player = &game->player;
+    player->x = pixel_to_fixed(PLAYER_START_X);
+    player->y = pixel_to_fixed(PLAYER_START_Y);
+    player->facing_left = 0;
+    player->state = PLAYER_REFILLING;
+    player->submerged = 0;
     game->player_torpedo.active = 0;
     game->player_hit = 0;
+    game->oxygen = 0;
 }
 
 static void reset_game(GameState *game) {
-    reset_player(game);
+    respawn_player(game);
     reset_lanes(game);
     for (uint8_t i = 0; i < SCORE_DIGITS; i++) {
         game->score_digits[i] = 0;
     }
     game->score_changed = 1;
-    game->oxygen = OXYGEN_MAX;
-    game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
     game->divers = 0;
     game->reserves = STARTING_RESERVES;
+    game->wave = 0;
 }
 
 void game_init(GameState *game) {
@@ -101,6 +107,7 @@ void game_init(GameState *game) {
     set_sprite_data(SPRITE_TILE_SHARK, shark_TILE_COUNT, shark_tiles);
     set_sprite_data(SPRITE_TILE_ENEMY_SUB, enemy_sub_TILE_COUNT, enemy_sub_tiles);
     set_sprite_data(SPRITE_TILE_DIVER, diver_TILE_COUNT, diver_tiles);
+    set_sprite_data(SPRITE_TILE_EXPLOSION, explosion_TILE_COUNT, explosion_tiles);
     set_bkg_data(0, hud_tiles_TILE_COUNT, hud_tiles_tiles);
     draw_static_background();
 
@@ -327,40 +334,100 @@ static void compute_spawn_budget(const GameState *game, SpawnBudget *budget) {
     }
 }
 
-/* Placeholder drain that wraps around; real oxygen rules come in EPIC D. */
-static void update_oxygen(GameState *game) {
-    game->oxygen_drain_timer--;
-    if (game->oxygen_drain_timer != 0) {
-        return;
-    }
-    game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
-    game->oxygen = (game->oxygen > 0) ? game->oxygen - 1 : OXYGEN_MAX;
+/* Losing the sub loses every diver on board, as in the original. */
+static void start_dying(GameState *game) {
+    game->player.state = PLAYER_DYING;
+    game->player.state_timer = DEATH_FRAMES;
+    game->player_torpedo.active = 0;
+    game->divers = 0;
 }
 
 /*
- * Placeholder until EPIC E1.3 (explosion, respawn flow, game over screen):
- * lose a reserve and restart the round; with no reserves left, restart the game.
+ * Once the explosion ends: lose a reserve and restart the round. With no
+ * reserves left the game restarts (placeholder until the game over flow, E1.3).
  */
-static void handle_player_death(GameState *game) {
+static void update_dying(GameState *game) {
+    if (--game->player.state_timer != 0) {
+        return;
+    }
     if (game->reserves == 0) {
         reset_game(game);
         return;
     }
     game->reserves--;
-    reset_player(game);
     reset_lanes(game);
+    respawn_player(game);
+}
+
+static void update_refill(GameState *game) {
+    game->oxygen += OXYGEN_REFILL_PER_FRAME;
+    if (game->oxygen >= OXYGEN_MAX) {
+        game->oxygen = OXYGEN_MAX;
+        game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
+        game->player.state = PLAYER_ACTIVE;
+    }
+}
+
+/* Surfacing rules (GUIA 3.5): the payload decides the outcome. */
+static void surface(GameState *game) {
+    game->player.submerged = 0;
+    if (game->divers == 0) {
+        start_dying(game);
+        return;
+    }
+    if (game->divers == MAX_DIVERS_ON_BOARD) {
+        /* Full load: everyone is dropped off, the ocean clears and the next wave starts. */
+        game->divers = 0;
+        game->wave++;
+        reset_lanes(game);
+    } else {
+        /* Coming up early costs one rescued diver. */
+        game->divers--;
+    }
+    game->player.state = PLAYER_REFILLING;
+}
+
+static void update_surfacing(GameState *game) {
+    Player *player = &game->player;
+    int16_t y = fixed_to_pixel(player->y);
+
+    if (y >= PLAYER_SUBMERGED_Y) {
+        player->submerged = 1;
+    } else if (player->submerged && y == PLAYER_MIN_Y) {
+        surface(game);
+    }
+}
+
+/* Drains only while submerged; the tank runs dry -> the sub is lost. */
+static void update_oxygen(GameState *game) {
+    if (!game->player.submerged || --game->oxygen_drain_timer != 0) {
+        return;
+    }
+    game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
+    if (--game->oxygen == 0) {
+        start_dying(game);
+    }
 }
 
 void game_update(GameState *game, const InputState *input) {
     SpawnBudget budget;
+    Player *player = &game->player;
     int16_t player_x;
 
     game->frame++;
-    update_player(&game->player, input);
+    if (player->state == PLAYER_DYING) {
+        update_dying(game);
+        return;
+    }
+    if (player->state == PLAYER_REFILLING) {
+        update_refill(game);
+    } else {
+        update_player(player, input);
+        fire_player_torpedo(&game->player_torpedo, player, input);
+    }
     update_torpedo(&game->player_torpedo, PLAYER_TORPEDO_SPEED);
-    fire_player_torpedo(&game->player_torpedo, &game->player, input);
 
-    player_x = fixed_to_pixel(game->player.x);
+    player_x = fixed_to_pixel(player->x);
     compute_spawn_budget(game, &budget);
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         update_lane(&game->lanes[i], game->frame, player_x, &budget);
@@ -368,9 +435,13 @@ void game_update(GameState *game, const InputState *input) {
 
     collisions_update(game);
     if (game->player_hit) {
-        handle_player_death(game);
+        start_dying(game);
+        return;
     }
-    update_oxygen(game);
+    if (player->state == PLAYER_ACTIVE) {
+        update_surfacing(game);
+        update_oxygen(game);
+    }
 }
 
 static void draw_score(const uint8_t *digits) {
@@ -399,10 +470,20 @@ static void draw_icon_counter(uint8_t column, uint8_t row, uint8_t count, uint8_
     set_bkg_tiles(column, row, slots, 1, tiles);
 }
 
+/* Low-oxygen alarm: while draining, the last tiles blink. */
+static uint8_t is_oxygen_alarm_off_phase(const GameState *game) {
+    return game->player.submerged && game->oxygen <= OXYGEN_LOW
+        && (game->frame / (uint8_t)OXYGEN_ALARM_BLINK_FRAMES) & 1;
+}
+
 static void render_hud(GameState *game) {
     HudCache *hud = &game->hud;
     /* Round up so the last tile only empties when oxygen is truly zero. */
     uint8_t oxygen_tiles = (uint8_t)(game->oxygen + 7) >> 3;
+
+    if (is_oxygen_alarm_off_phase(game)) {
+        oxygen_tiles = 0;
+    }
 
     if (game->score_changed) {
         game->score_changed = 0;
@@ -433,6 +514,7 @@ _Static_assert(player_sub_TILE_COUNT == 2, "player_sub.png must be 16x8");
 _Static_assert(shark_TILE_COUNT == 2, "shark.png must be 16x8");
 _Static_assert(enemy_sub_TILE_COUNT == 2, "enemy_sub.png must be 16x8");
 _Static_assert(diver_TILE_COUNT == 2, "diver.png must be 16x8");
+_Static_assert(explosion_TILE_COUNT == 2, "explosion.png must be 16x8");
 _Static_assert(torpedo_TILE_COUNT == 1, "torpedo.png must be 8x8");
 
 static inline void set_oam(volatile OAM_item_t *oam, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop) {
@@ -521,9 +603,15 @@ void game_render(GameState *game) {
     render_hud(game);
 
     /* Lowest OAM slots win when a scanline overflows, so the player goes first. */
-    next_sprite += render_entity(SPRITE_TILE_PLAYER_SUB, fixed_to_pixel(player->x),
-                                 (uint8_t)fixed_to_pixel(player->y), player->facing_left,
-                                 next_sprite);
+    if (player->state != PLAYER_DYING) {
+        next_sprite += render_entity(SPRITE_TILE_PLAYER_SUB, fixed_to_pixel(player->x),
+                                     (uint8_t)fixed_to_pixel(player->y), player->facing_left,
+                                     next_sprite);
+    } else if ((player->state_timer / (uint8_t)EXPLOSION_BLINK_FRAMES) & 1) {
+        next_sprite += render_entity(SPRITE_TILE_EXPLOSION, fixed_to_pixel(player->x),
+                                     (uint8_t)fixed_to_pixel(player->y), player->facing_left,
+                                     next_sprite);
+    }
     next_sprite += render_torpedo(&game->player_torpedo, next_sprite);
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         next_sprite += render_lane(&game->lanes[i], next_sprite);

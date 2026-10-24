@@ -97,12 +97,20 @@ O jogador pilota um submarino para **resgatar mergulhadores (divers)** no fundo 
 - **Carga parcial (1 a 5 divers):** subir cedo **custa 1 diver** por viagem antecipada (você perde um dos resgatados).
 - **Carga vazia (0 divers):** subir sem nenhum diver **destrói o submarino imediatamente** (perde vida).
 - **Refil congelado:** durante o reabastecimento de oxigênio o player **fica parado**; a partir de certas waves, o **patrol sub** continua se movendo e pode te matar nesse momento.
-- **Ficar sem oxigênio:** destrói o sub e **custa 1 diver** (além da vida, conforme a versão).
+- **Ficar sem oxigênio:** destrói o sub. Como em toda morte, perde a vida **e todos os divers a bordo** (decidido: fiel ao original).
 
 ### 3.6. Oxigênio
 - Barra drena a taxa constante enquanto submerso.
 - Enche ao atingir a superfície.
 - Oxigênio restante em surface com carga cheia → bônus (ver scoring).
+
+### 3.6.1. Como foi implementado (EPIC D)
+- **Estados do player:** `PLAYER_REFILLING` (na superfície, congelado, O₂ enchendo), `PLAYER_ACTIVE` e `PLAYER_DYING` (explosão piscando por 90 frames ≈ 1,5 s, com o mundo congelado).
+- **Toda vida começa na superfície com o tanque vazio**, enchendo (~1,6 s), como no original. Isso também evita que o início do jogo conte como "subir com 0 divers".
+- **Submerso** = casco inteiro abaixo da linha d'água (`PLAYER_SUBMERGED_Y`, 8 px abaixo da superfície). **Subir** = voltar à superfície depois de ter submergido; balançar rente à superfície não aciona as regras.
+- O₂ **só drena submerso** (1 unidade a cada 10 frames; tanque cheio ≈ 16 s). Com 2 blocos ou menos, a barra **pisca** (alarme visual; o sonoro vem no F1.3).
+- **Regras ao subir:** 6 divers → descarrega todos, limpa o oceano, `wave++` e reabastece; 1–5 → perde 1 diver e reabastece; 0 → explode.
+- **Mortes** (O₂ zerado, colisão com inimigo/torpedo ou subir vazio): perde a vida **e todos os divers a bordo**, como no original. Após a explosão: perde uma reserva e reaparece na superfície; sem reservas, o jogo reinicia (placeholder até o fluxo de game over do E1.3).
 
 ### 3.7. Sistema de pontuação
 > **Nota:** há divergência entre fontes sobre o valor inicial de inimigos (a descrição do Carlos diz 20; a Wikipédia menciona 10, aumentando conforme avança). Vamos adotar os valores da descrição do Carlos como **canônicos para o nosso clone** e deixá-los em constantes fáceis de ajustar no playtest.
