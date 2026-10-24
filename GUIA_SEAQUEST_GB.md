@@ -30,7 +30,7 @@ Carlos definiu princípios de engenharia que valem para **todo** o projeto. Siga
 - Nomes descritivos em inglês. Sem abreviações crípticas.
 - Comentários explicam o **porquê** (decisão de design, constraint de hardware), não o **o quê** óbvio.
 - Funções curtas e com propósito único, mas sem criar indireção desnecessária.
-- Antes de otimizar, medir. O gargalo real do GB costuma ser VRAM/sprites por linha, não CPU.
+- Antes de otimizar, medir. Em C com SDCC, **CPU também é gargalo** (ver seção 6.1) — não só VRAM/sprites por linha.
 
 ---
 
@@ -44,15 +44,15 @@ Alvo: **Game Boy original (DMG)** — 4 tons de cinza. (Portar para GBC pode vir
 | Resolução | 160 × 144 px | Tela de jogo + HUD de oxigênio/divers/score |
 | Tiles | 8×8 px, até 384 em VRAM | Orçamento de tiles é escasso; reusar bastante |
 | Sprites | **Máx 40 na tela, máx 10 por scanline** | **Constraint crítico** (ver 2.1) |
-| Tamanho sprite | 8×8 ou 8×16 px (modo global) | **Decidido: 8×8.** Sub, inimigos e divers são *metasprites* 16×8 (2 sprites lado a lado); torpedos usam 1 sprite 8×8 |
+| Tamanho sprite | 8×8 ou 8×16 px (modo global) | **Decidido: 8×8.** Sub, inimigos e divers são entidades 16×8 (2 sprites 8×8 lado a lado); torpedos usam 1 sprite 8×8 |
 | Som | 4 canais (2 pulse, 1 wave, 1 noise) | Só SFX, sem música (decisão do Carlos) |
 
 ### 2.1. O constraint dos 10 sprites por scanline
 No Game Boy, **só 10 sprites podem ser desenhados na mesma linha horizontal**; o 11º some. Como no Seaquest os inimigos vêm em **fileiras horizontais**, dois ou mais inimigos na mesma altura Y podem estourar o limite junto com o sub e divers.
 - **Mitigação:** limitar o número de entidades ativas por "faixa" (row) vertical. Projetar o spawner para distribuir inimigos entre as fileiras.
-- **Orçamento inicial sugerido:** 1 sub do player (2 hardware sprites, metasprite 16×8) + torpedo (1), ~4–6 inimigos, até 4 divers, 1–2 torpedos, 1 patrol sub. Monitorar.
+- **Orçamento adotado:** 1 sub do player (2 hardware sprites, entidade 16×8) + torpedo (1), **até 8 inimigos** (`MAX_ACTIVE_ENEMIES`) e **até 2 torpedos inimigos** (`MAX_ENEMY_TORPEDOES`) simultâneos, divers conforme as fileiras, 1 patrol sub (EPIC F). Os tetos vêm do orçamento de **CPU** (seção 6.1), não do de sprites.
 - **Conta por scanline:** cada entidade 16×8 ocupa **2 sprites** na linha em que está. Pior caso: 3 entidades da fileira (6) + torpedo inimigo da fileira (1) + sub do player (2) + torpedo do player (1) = **10** — exatamente o limite. Por isso o spawner garante **no máx. 3 entidades 16×8 por fileira** (inimigos + diver) e **1 torpedo inimigo por fileira**.
-- **Modelo de fileiras (implementado no EPIC C):** 4 fileiras fixas na água, espaçadas 22 px. Cada fileira recebe um *grupo*: 1–3 inimigos do mesmo tipo (sharks **ou** enemy subs), mesma direção, entrando juntos pelo mesmo lado, mais um diver opcional no fim da fila (com diver, o grupo tem no máx. 2 inimigos). Uma fileira só recebe novo grupo depois de esvaziar. O espaçamento garante que um shark oscilando (±4 px) nunca invade a fileira vizinha, então as fileiras não somam sprites entre si.
+- **Modelo de fileiras (implementado no EPIC C):** 4 fileiras fixas na água, espaçadas 22 px. Cada fileira recebe um *grupo*: 1–3 inimigos do mesmo tipo (sharks **ou** enemy subs), mesma direção, entrando juntos pelo mesmo lado, mais um diver opcional no fim da fila (com diver, o grupo tem no máx. 2 inimigos). Uma fileira só recebe novo grupo depois de esvaziar, e só se o teto global de inimigos permitir. O grupo se move como uma unidade: guarda-se só o x do líder e uma máscara de bits de membros vivos (`alive_mask`); cada membro fica a 24 px do anterior e todos compartilham o mesmo y (o grupo de sharks oscila em sincronia, como no original). O espaçamento garante que um shark oscilando (±4 px) nunca invade a fileira vizinha, então as fileiras não somam sprites entre si.
 - **Prioridade:** o player é desenhado nos primeiros slots de OAM; se algum dia uma linha estourar, quem some é um inimigo, nunca o sub.
 - **Por que 8×8 e não 8×16:** o modo 8×16 gera sprites altos e estreitos (8 px de largura); sub, tubarões e divers são largos e baixos, então 16×8 (dois 8×8 lado a lado) representa melhor as formas sem desperdiçar tiles.
 
@@ -156,7 +156,7 @@ Epic → Milestone (entregável testável) → Task (unidade implementável) →
 
 ### EPIC B — O submarino do player
 **Milestone B1: "I can pilot the sub"**
-- Task B1.1: Sprite do sub (metasprite 16×8, 2 sprites 8×8), movimento livre nas 4 direções + diagonais, clamp nas bordas. *AC: sub não sai da tela; movimento suave.*
+- Task B1.1: Sprite do sub (entidade 16×8, 2 sprites 8×8), movimento livre nas 4 direções + diagonais, clamp nas bordas. *AC: sub não sai da tela; movimento suave.*
 - Task B1.2: Orientação esquerda/direita conforme última direção horizontal. *AC: sprite espelha corretamente.*
 - Task B1.3: Disparo de torpedo (1 na tela), saindo na direção que o sub aponta. *AC: torpedo some ao sair da tela; respeita limite de 1.*
 
@@ -211,7 +211,7 @@ seaquest/
 
 **Pipeline de assets (png2asset):**
 - Os `.c/.h` de assets **não são versionados**: o `Makefile` roda o `png2asset` (que vem no GBDK) sobre cada PNG de `res/` e gera em `build/assets/`. Para adicionar um asset, inclua o PNG na lista `SPRITE_PNGS` ou `TILESET_PNGS` do `Makefile`.
-- **Sprites** (`SPRITE_PNGS`): convertidos como metasprite com `-spr8x8`. O PNG tem o tamanho da entidade (ex.: 16×8). O pivot é o centro; o código guarda o canto superior esquerdo e converte no render. O espelhamento esquerda/direita é feito em runtime (`move_metasprite_flipx`), então desenhamos só a versão virada para a direita.
+- **Sprites** (`SPRITE_PNGS`): convertidos só como tiles (`-spr8x8 -sprite_no_optimize -tiles_only`), da esquerda para a direita: uma entidade 16×8 vira exatamente 2 tiles (esquerdo, direito) e o torpedo 1 tile. `-sprite_no_optimize` impede que tiles repetidos/vazios sejam removidos, então a ordem é garantida (há `_Static_assert` no código conferindo a contagem). O render escreve direto na shadow OAM — a rotina genérica de metasprites do GBDK custava caro demais. O espelhamento esquerda/direita é feito em runtime (flag `S_FLIPX` + troca da ordem dos 2 tiles), então desenhamos só a versão virada para a direita.
 - **Tilesets** (`TILESET_PNGS`): faixa horizontal de tiles 8×8 exportada sem deduplicação; a ordem dos tiles da esquerda para a direita **é** o índice na VRAM e precisa bater com o `enum` correspondente em `game.c`.
 - **Formato dos PNGs:** indexado com 4 cores na ordem branco, cinza claro, cinza escuro, preto (índices 0–3). Em sprites, o índice 0 é transparente. Tiles de HUD usam cinza claro (índice 1) como fundo, que é a cor das faixas de HUD.
 
@@ -227,7 +227,22 @@ seaquest/
   - **Por que 12.4 com sinal e não 8.8:** inimigos nascem **fora da tela** (x negativo à esquerda, x ≥ 160 à direita, com o grupo enfileirado atrás). 8.8 sem sinal não representa x negativo, e 8.8 com sinal só cobre ±128 px, menos que a largura da tela. 1/16 px de precisão é mais que suficiente para a escalada de velocidade; o custo de `>> 4` é desprezível.
 - Estado global do jogo numa única `struct GameState` passada por ponteiro (sem globais soltas espalhadas).
 - Constantes de tuning (velocidades, valores de score, taxa de O₂) agrupadas como `const`/`enum` no topo de `game.h`, bem comentadas — fáceis de ajustar no playtest.
-- Loop: `input → update → render → vsync()` (`vsync()` é o nome atual de `wait_vbl_done()` no GBDK-2020). Sem lógica no meio do render.
+- Loop: `input → update → vsync() → render` (`vsync()` é o nome atual de `wait_vbl_done()` no GBDK-2020). O render vem **logo após** o `vsync()` para que as escritas de HUD na VRAM caiam no VBlank (fora dele, cada byte espera a VRAM liberar); os sprites vão para a shadow OAM, copiada para o hardware no VBlank seguinte. Sem lógica no meio do render.
+- **Score em dígitos decimais** (`score_digits[6]`), não `uint32_t`: extrair 6 dígitos de um `uint32_t` exige divisões de 32 bits em software, que custavam mais que um frame inteiro.
+
+### 6.1. Desempenho com SDCC no SM83 (medido no EPIC C)
+
+O orçamento é de **154 scanlines por frame** (70.224 ciclos de clock; ~17.500 ciclos de máquina). Em C com SDCC, cada comando simples custa da ordem de 40 ciclos de máquina, porque a CPU tem poucos registradores e as variáveis vivem na pilha. Regras que saíram das medições (e que devemos seguir daqui em diante):
+
+- **Medir sempre o pior caso**, não a média. Meta: pior frame real ≤ ~85–90% do orçamento, deixando folga para os próximos epics. Estado após a otimização: pior frame observado em jogo ~138/154 scanlines; cena vazia ~55.
+- **Não percorrer slots vazios.** Loops sobre arrays com flag `active` custavam caro mesmo sem nada ativo; preferir máscaras de bits que terminam após o último elemento vivo (ver `Lane.alive_mask`).
+- **Evitar comparações de 16 bits com sinal** em caminhos quentes: a CPU não tem flags de sinal e cada uma vira ~20 instruções. Usar `is_in_range()` (uma comparação sem sinal) ou testes de sinal (`x < 0`).
+- **Colisões em 8 bits** (espaço de colisão deslocado +16 px) e com *broad phase* por fileira: um teste de y descarta fileiras inteiras.
+- **Copiar campos de struct para variáveis locais** antes de loops quentes, em vez de reler `ptr->campo` a cada iteração.
+- **Nada de divisão/módulo de 16/32 bits por frame.** Só em eventos raros (ex.: spawn).
+- **Escritas de VRAM (HUD) no VBlank** e só quando o valor muda.
+- **Flags do SDCC:** `--max-allocs-per-node50000 --opt-code-speed` (~8% de ganho, custa só tempo de compilação).
+- Quando ainda assim não couber: **limitar quantidade** (tetos de entidades) antes de sacrificar clareza do código.
 
 ---
 
@@ -235,7 +250,7 @@ seaquest/
 
 - **WSL2 (Ubuntu) no desktop Windows**, editando via VSCode Remote-WSL.
 - **GBDK-2020** (binário Linux x64) + **SDCC** (vem junto).
-- **png2asset** (vem no GBDK-2020, em `gbdk/bin/`) para converter PNG → metasprites/tilesets. Chamado automaticamente pelo `Makefile` (ver seção 6).
+- **png2asset** (vem no GBDK-2020, em `gbdk/bin/`) para converter PNG → tiles de sprites/tilesets. Chamado automaticamente pelo `Makefile` (ver seção 6).
 - **make** para build.
 - **Emulador:** mgba-qt (`make run`, ver README.md) para rodar/debugar. No mGBA, o botão A do Game Boy fica na tecla **X** e o B na **Z** (a tecla A do teclado é o L do GBA); BGB/Emulicious nativos no Windows como alternativa de debug.
 - Arquivos do projeto no **filesystem nativo do WSL** (`~/...`), não em `/mnt/c/`, para I/O rápido.

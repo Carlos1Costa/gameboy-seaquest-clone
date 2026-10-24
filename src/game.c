@@ -1,5 +1,4 @@
 #include <gb/gb.h>
-#include <gb/metasprites.h>
 #include <rand.h>
 
 #include "game.h"
@@ -58,25 +57,19 @@ static void draw_static_background(void) {
 
 static void reset_hud_cache(HudCache *hud) {
     /* Values the game can never reach, so the first render draws everything. */
-    hud->score = 0xFFFFFFFF;
     hud->oxygen_tiles = 0xFF;
     hud->divers = 0xFF;
     hud->reserves = 0xFF;
-}
-
-static uint8_t lane_y(uint8_t lane_index) {
-    return LANE_FIRST_Y + lane_index * LANE_SPACING;
 }
 
 /* Empties every lane and staggers their first spawns. */
 static void reset_lanes(GameState *game) {
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         Lane *lane = &game->lanes[i];
-        for (uint8_t j = 0; j < LANE_MAX_ENTITIES; j++) {
-            lane->enemies[j].active = 0;
-        }
-        lane->diver.active = 0;
+        lane->alive_mask = 0;
+        lane->diver_active = 0;
         lane->torpedo.active = 0;
+        lane->base_y = LANE_FIRST_Y + i * LANE_SPACING;
         lane->spawn_timer = LANE_FIRST_SPAWN_DELAY + i * LANE_FIRST_SPAWN_STAGGER;
     }
 }
@@ -92,7 +85,10 @@ static void reset_player(GameState *game) {
 static void reset_game(GameState *game) {
     reset_player(game);
     reset_lanes(game);
-    game->score = 0;
+    for (uint8_t i = 0; i < SCORE_DIGITS; i++) {
+        game->score_digits[i] = 0;
+    }
+    game->score_changed = 1;
     game->oxygen = OXYGEN_MAX;
     game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
     game->divers = 0;
@@ -170,7 +166,7 @@ static void update_torpedo(Torpedo *torpedo, Fixed speed) {
     }
     torpedo->x += torpedo->moving_left ? -speed : speed;
     x = fixed_to_pixel(torpedo->x);
-    if (x <= -TORPEDO_WIDTH || x >= SCREEN_PX_WIDTH) {
+    if (!is_in_range(x, -TORPEDO_WIDTH + 1, SCREEN_PX_WIDTH + TORPEDO_WIDTH - 1)) {
         torpedo->active = 0;
     }
 }
@@ -184,109 +180,151 @@ static Fixed group_entry_x(uint8_t moving_left, uint8_t member) {
     return pixel_to_fixed(-ENTITY_WIDTH - queue_offset);
 }
 
-static void spawn_group(Lane *lane) {
+/* What the lanes may still add this frame under the global caps. */
+typedef struct {
+    uint8_t enemies_left;
+    uint8_t torpedoes_left;
+} SpawnBudget;
+
+static uint8_t count_members(uint8_t alive_mask) {
+    return (alive_mask & 1) + ((alive_mask >> 1) & 1) + ((alive_mask >> 2) & 1);
+}
+
+static void spawn_group(Lane *lane, SpawnBudget *budget) {
     uint8_t roll = rand();
     uint8_t has_diver = rand() < DIVER_CHANCE;
     /* The diver takes one of the lane's entity slots. */
     uint8_t max_enemies = has_diver ? LANE_MAX_ENTITIES - 1 : LANE_MAX_ENTITIES;
     uint8_t enemy_count = 1 + rand() % max_enemies;
+    uint8_t moving_left = roll & 1;
 
-    lane->moving_left = roll & 1;
-    lane->enemy_type = (roll & 2) ? ENEMY_SUB : ENEMY_SHARK;
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        lane->enemies[i].active = i < enemy_count;
-        lane->enemies[i].x = group_entry_x(lane->moving_left, i);
+    if (enemy_count > budget->enemies_left) {
+        enemy_count = budget->enemies_left;
     }
-    lane->diver.active = has_diver;
-    lane->diver.x = group_entry_x(lane->moving_left, enemy_count);
+    budget->enemies_left -= enemy_count;
+
+    lane->moving_left = moving_left;
+    lane->enemy_type = (roll & 2) ? ENEMY_SUB : ENEMY_SHARK;
+    lane->alive_mask = (uint8_t)((1 << enemy_count) - 1);
+    lane->group_x = group_entry_x(moving_left, 0);
+    lane->leader_x = fixed_to_pixel(lane->group_x);
+    /* Members queue up behind the leader, opposite to the direction of travel. */
+    lane->member_step = moving_left ? GROUP_SPACING : -GROUP_SPACING;
+    lane->enemy_y = lane->base_y;
+
+    lane->diver_active = has_diver;
+    lane->diver_fixed_x = group_entry_x(moving_left, enemy_count);
+    lane->diver_x = fixed_to_pixel(lane->diver_fixed_x);
+
     lane->fire_timer = ENEMY_FIRE_DELAY_MIN + (rand() & ENEMY_FIRE_DELAY_RANDOM_MASK);
 }
 
-static uint8_t lane_is_empty(const Lane *lane) {
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        if (lane->enemies[i].active) {
-            return 0;
-        }
-    }
-    return !lane->diver.active;
+/*
+ * For an entity already known to be off screen: true when it is on the side
+ * it is heading to, i.e. it has crossed (otherwise it is still queued to enter).
+ * A sign test is cheap on the SM83.
+ */
+static inline uint8_t is_past_far_edge(int16_t x, uint8_t moving_left) {
+    return moving_left ? x < 0 : x >= 0;
 }
 
-/* Moves a lane entity and deactivates it once it has left the far side. */
-static void move_lane_entity(LaneEntity *entity, Fixed speed, uint8_t moving_left) {
-    if (moving_left) {
-        entity->x -= speed;
-        if (fixed_to_pixel(entity->x) <= -ENTITY_WIDTH) {
-            entity->active = 0;
-        }
-    } else {
-        entity->x += speed;
-        if (fixed_to_pixel(entity->x) >= SCREEN_PX_WIDTH) {
-            entity->active = 0;
-        }
-    }
+static inline uint8_t has_crossed_screen(int16_t x, uint8_t moving_left) {
+    return !entity_is_visible(x) && is_past_far_edge(x, moving_left);
 }
 
 static uint8_t is_fully_on_screen(int16_t x) {
-    return x >= 0 && x <= SCREEN_PX_WIDTH - ENTITY_WIDTH;
+    return is_in_range(x, 0, SCREEN_PX_WIDTH - ENTITY_WIDTH + 1);
+}
+
+static void update_group(Lane *lane, uint8_t frame) {
+    Fixed speed = (lane->enemy_type == ENEMY_SHARK) ? SHARK_SPEED : ENEMY_SUB_SPEED;
+    uint8_t moving_left = lane->moving_left;
+    int16_t x;
+
+    lane->group_x += moving_left ? -speed : speed;
+    x = fixed_to_pixel(lane->group_x);
+    lane->leader_x = x;
+
+    /* A shark group bobs in sync, as in the original. */
+    lane->enemy_y = lane->base_y;
+    if (lane->enemy_type == ENEMY_SHARK) {
+        /* Unsigned divisor: enum constants are int, and a signed division can't become a plain shift. */
+        uint8_t wave_step = frame / (uint8_t)SHARK_WAVE_FRAMES_PER_STEP;
+        lane->enemy_y += shark_wave[wave_step & (SHARK_WAVE_STEPS - 1)];
+    }
+
+    /* Members cross the far edge in order, leader first: stop at the first still on its way. */
+    for (uint8_t bit = 1; bit <= lane->alive_mask; bit <<= 1, x += lane->member_step) {
+        if (!has_crossed_screen(x, moving_left)) {
+            break;
+        }
+        lane->alive_mask &= (uint8_t)~bit;
+    }
+}
+
+static void update_diver(Lane *lane) {
+    lane->diver_fixed_x += lane->moving_left ? -DIVER_SPEED : DIVER_SPEED;
+    lane->diver_x = fixed_to_pixel(lane->diver_fixed_x);
+    if (has_crossed_screen(lane->diver_x, lane->moving_left)) {
+        lane->diver_active = 0;
+    }
 }
 
 /* An enemy sub fires along its heading, only when the player is ahead of it. */
-static void update_enemy_fire(Lane *lane, int16_t player_x) {
-    if (lane->enemy_type != ENEMY_SUB || lane->torpedo.active) {
+static void update_enemy_fire(Lane *lane, int16_t player_x, SpawnBudget *budget) {
+    if (lane->enemy_type != ENEMY_SUB || lane->alive_mask == 0 || lane->torpedo.active
+        || budget->torpedoes_left == 0) {
         return;
     }
     if (lane->fire_timer != 0) {
         lane->fire_timer--;
         return;
     }
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        const LaneEntity *enemy = &lane->enemies[i];
-        int16_t x = fixed_to_pixel(enemy->x);
+    int16_t x = lane->leader_x;
+    for (uint8_t bit = 1; bit <= lane->alive_mask; bit <<= 1, x += lane->member_step) {
         uint8_t player_ahead = lane->moving_left ? (player_x < x) : (player_x > x);
 
-        if (enemy->active && is_fully_on_screen(x) && player_ahead) {
-            launch_torpedo(&lane->torpedo, x, enemy->y, lane->moving_left);
+        if ((lane->alive_mask & bit) && is_fully_on_screen(x) && player_ahead) {
+            launch_torpedo(&lane->torpedo, x, lane->enemy_y, lane->moving_left);
+            budget->torpedoes_left--;
             lane->fire_timer = ENEMY_FIRE_DELAY_MIN + (rand() & ENEMY_FIRE_DELAY_RANDOM_MASK);
             return;
         }
     }
+    /* Scanning is costly; skip a few frames instead of retrying every frame. */
+    lane->fire_timer = ENEMY_FIRE_RETRY_DELAY;
 }
 
-static void update_lane(Lane *lane, uint8_t base_y, uint8_t frame, int16_t player_x) {
-    Fixed enemy_speed = (lane->enemy_type == ENEMY_SHARK) ? SHARK_SPEED : ENEMY_SUB_SPEED;
-    /* Unsigned divisor: enum constants are int, and a signed division can't become a plain shift. */
-    uint8_t wave_step = frame / (uint8_t)SHARK_WAVE_FRAMES_PER_STEP;
-
-    if (lane_is_empty(lane)) {
+static void update_lane(Lane *lane, uint8_t frame, int16_t player_x, SpawnBudget *budget) {
+    if (lane->alive_mask == 0 && !lane->diver_active) {
         if (lane->spawn_timer != 0) {
             lane->spawn_timer--;
         } else {
-            spawn_group(lane);
+            /* At the enemy cap, wait a full delay before trying again. */
+            if (budget->enemies_left != 0) {
+                spawn_group(lane, budget);
+            }
             lane->spawn_timer = SPAWN_DELAY_MIN + (rand() & SPAWN_DELAY_RANDOM_MASK);
         }
     }
-
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        LaneEntity *enemy = &lane->enemies[i];
-        if (!enemy->active) {
-            continue;
-        }
-        move_lane_entity(enemy, enemy_speed, lane->moving_left);
-        enemy->y = base_y;
-        if (lane->enemy_type == ENEMY_SHARK) {
-            /* Members are out of phase, so the group ripples instead of bobbing in sync. */
-            uint8_t step = (wave_step + i * SHARK_WAVE_MEMBER_OFFSET) & (SHARK_WAVE_STEPS - 1);
-            enemy->y += shark_wave[step];
-        }
+    if (lane->alive_mask != 0) {
+        update_group(lane, frame);
     }
-
-    if (lane->diver.active) {
-        move_lane_entity(&lane->diver, DIVER_SPEED, lane->moving_left);
-        lane->diver.y = base_y;
+    if (lane->diver_active) {
+        update_diver(lane);
     }
-
     update_torpedo(&lane->torpedo, ENEMY_TORPEDO_SPEED);
-    update_enemy_fire(lane, player_x);
+    update_enemy_fire(lane, player_x, budget);
+}
+
+static void compute_spawn_budget(const GameState *game, SpawnBudget *budget) {
+    budget->enemies_left = MAX_ACTIVE_ENEMIES;
+    budget->torpedoes_left = MAX_ENEMY_TORPEDOES;
+    for (uint8_t i = 0; i < LANE_COUNT; i++) {
+        const Lane *lane = &game->lanes[i];
+        budget->enemies_left -= count_members(lane->alive_mask);
+        budget->torpedoes_left -= lane->torpedo.active;
+    }
 }
 
 /* Placeholder drain that wraps around; real oxygen rules come in EPIC D. */
@@ -314,6 +352,7 @@ static void handle_player_death(GameState *game) {
 }
 
 void game_update(GameState *game, const InputState *input) {
+    SpawnBudget budget;
     int16_t player_x;
 
     game->frame++;
@@ -322,8 +361,9 @@ void game_update(GameState *game, const InputState *input) {
     fire_player_torpedo(&game->player_torpedo, &game->player, input);
 
     player_x = fixed_to_pixel(game->player.x);
+    compute_spawn_budget(game, &budget);
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
-        update_lane(&game->lanes[i], lane_y(i), game->frame, player_x);
+        update_lane(&game->lanes[i], game->frame, player_x, &budget);
     }
 
     collisions_update(game);
@@ -333,11 +373,10 @@ void game_update(GameState *game, const InputState *input) {
     update_oxygen(game);
 }
 
-static void draw_score(uint32_t score) {
+static void draw_score(const uint8_t *digits) {
     uint8_t tiles[SCORE_DIGITS];
-    for (int8_t i = SCORE_DIGITS - 1; i >= 0; i--) {
-        tiles[i] = BG_TILE_DIGIT_0 + (uint8_t)(score % 10);
-        score /= 10;
+    for (uint8_t i = 0; i < SCORE_DIGITS; i++) {
+        tiles[i] = BG_TILE_DIGIT_0 + digits[i];
     }
     set_bkg_tiles(SCORE_COLUMN, ROW_SCORE, SCORE_DIGITS, 1, tiles);
 }
@@ -365,9 +404,9 @@ static void render_hud(GameState *game) {
     /* Round up so the last tile only empties when oxygen is truly zero. */
     uint8_t oxygen_tiles = (uint8_t)(game->oxygen + 7) >> 3;
 
-    if (hud->score != game->score) {
-        hud->score = game->score;
-        draw_score(game->score);
+    if (game->score_changed) {
+        game->score_changed = 0;
+        draw_score(game->score_digits);
     }
     if (hud->oxygen_tiles != oxygen_tiles) {
         hud->oxygen_tiles = oxygen_tiles;
@@ -386,68 +425,89 @@ static void render_hud(GameState *game) {
 }
 
 /*
- * Draws a right-facing metasprite (flipped when facing left) whose top-left
- * corner is at screen (x, y). Its pivot is the sprite center, so the sprite
- * is 2 * pivot_x wide. Returns how many hardware sprites were used.
+ * Every sprite asset is a horizontal strip of 8x8 tiles: entities are 2 tiles
+ * (left, right), torpedoes are 1. Writing those straight into the shadow OAM
+ * is much cheaper than GBDK's generic metasprite routine.
  */
-static uint8_t render_metasprite(const metasprite_t *metasprite, uint8_t base_tile,
-                                 uint8_t pivot_x, uint8_t pivot_y,
-                                 int16_t x, uint8_t y, uint8_t facing_left,
-                                 uint8_t first_sprite) {
-    uint8_t oam_x;
-    uint8_t oam_y;
+_Static_assert(player_sub_TILE_COUNT == 2, "player_sub.png must be 16x8");
+_Static_assert(shark_TILE_COUNT == 2, "shark.png must be 16x8");
+_Static_assert(enemy_sub_TILE_COUNT == 2, "enemy_sub.png must be 16x8");
+_Static_assert(diver_TILE_COUNT == 2, "diver.png must be 16x8");
+_Static_assert(torpedo_TILE_COUNT == 1, "torpedo.png must be 8x8");
 
-    /* Fully off screen: skip, so queued group members don't use OAM slots. */
-    if (x <= -(int16_t)(2 * pivot_x) || x >= SCREEN_PX_WIDTH) {
-        return 0;
-    }
-    /*
-     * A partly visible sprite on the left edge can give a hardware x below 0;
-     * the uint8_t wrap puts that tile past the right edge, where it is hidden.
-     */
-    oam_x = (uint8_t)(x + pivot_x + DEVICE_SPRITE_PX_OFFSET_X);
-    oam_y = y + pivot_y + DEVICE_SPRITE_PX_OFFSET_Y;
-
-    if (facing_left) {
-        return move_metasprite_flipx(metasprite, base_tile, 0, first_sprite, oam_x, oam_y);
-    }
-    return move_metasprite_ex(metasprite, base_tile, 0, first_sprite, oam_x, oam_y);
+static inline void set_oam(volatile OAM_item_t *oam, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop) {
+    oam->y = y;
+    oam->x = x;
+    oam->tile = tile;
+    oam->prop = prop;
 }
 
-static uint8_t render_torpedo(const Torpedo *torpedo, uint8_t first_sprite) {
+/*
+ * Draws a right-facing 16x8 entity (mirrored when facing left) with its
+ * top-left corner at screen (x, y). Returns how many hardware sprites were used.
+ */
+static uint8_t render_entity(uint8_t first_tile, int16_t x, uint8_t y, uint8_t facing_left,
+                             uint8_t sprite) {
+    volatile OAM_item_t *oam = &shadow_OAM[sprite];
+    uint8_t left_tile = first_tile;
+    uint8_t right_tile = first_tile + 1;
+    uint8_t prop = 0;
+
+    /* Fully off screen: skip, so queued group members don't use OAM slots. */
+    if (!entity_is_visible(x)) {
+        return 0;
+    }
+    /* Mirroring a 2-tile sprite = flip each tile and swap their order. */
+    if (facing_left) {
+        left_tile = first_tile + 1;
+        right_tile = first_tile;
+        prop = S_FLIPX;
+    }
+    /*
+     * A partly visible entity on the left edge gives a hardware x below 0 for
+     * its left tile; the uint8_t wrap puts that tile past the right edge, where
+     * the hardware hides it.
+     */
+    uint8_t oam_x = (uint8_t)x + DEVICE_SPRITE_PX_OFFSET_X;
+    uint8_t oam_y = y + DEVICE_SPRITE_PX_OFFSET_Y;
+    set_oam(oam, oam_x, oam_y, left_tile, prop);
+    set_oam(oam + 1, oam_x + 8, oam_y, right_tile, prop);
+    return 2;
+}
+
+static uint8_t render_torpedo(const Torpedo *torpedo, uint8_t sprite) {
     if (!torpedo->active) {
         return 0;
     }
-    return render_metasprite(torpedo_metasprites[0], SPRITE_TILE_TORPEDO,
-                             torpedo_PIVOT_X, torpedo_PIVOT_Y,
-                             fixed_to_pixel(torpedo->x), torpedo->y, torpedo->moving_left,
-                             first_sprite);
+    /* Active torpedoes are never fully off screen (update_torpedo retires them). */
+    set_oam(&shadow_OAM[sprite],
+            (uint8_t)fixed_to_pixel(torpedo->x) + DEVICE_SPRITE_PX_OFFSET_X,
+            torpedo->y + DEVICE_SPRITE_PX_OFFSET_Y,
+            SPRITE_TILE_TORPEDO,
+            torpedo->moving_left ? S_FLIPX : 0);
+    return 1;
 }
 
 static uint8_t render_lane(const Lane *lane, uint8_t first_sprite) {
     uint8_t used = 0;
-    const metasprite_t *enemy_metasprite = shark_metasprites[0];
-    uint8_t enemy_tile = SPRITE_TILE_SHARK;
 
-    if (lane->enemy_type == ENEMY_SUB) {
-        enemy_metasprite = enemy_sub_metasprites[0];
-        enemy_tile = SPRITE_TILE_ENEMY_SUB;
-    }
-
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        const LaneEntity *enemy = &lane->enemies[i];
-        if (enemy->active) {
-            used += render_metasprite(enemy_metasprite, enemy_tile,
-                                      shark_PIVOT_X, shark_PIVOT_Y,
-                                      fixed_to_pixel(enemy->x), enemy->y, lane->moving_left,
-                                      first_sprite + used);
+    if (lane->alive_mask != 0) {
+        /* Locals instead of lane->...: each pointer dereference costs extra on the SM83. */
+        uint8_t alive = lane->alive_mask;
+        int16_t step = lane->member_step;
+        uint8_t y = lane->enemy_y;
+        uint8_t facing_left = lane->moving_left;
+        uint8_t tile = (lane->enemy_type == ENEMY_SUB) ? SPRITE_TILE_ENEMY_SUB : SPRITE_TILE_SHARK;
+        int16_t x = lane->leader_x;
+        for (uint8_t bit = 1; bit <= alive; bit <<= 1, x += step) {
+            if (alive & bit) {
+                used += render_entity(tile, x, y, facing_left, first_sprite + used);
+            }
         }
     }
-    if (lane->diver.active) {
-        used += render_metasprite(diver_metasprites[0], SPRITE_TILE_DIVER,
-                                  diver_PIVOT_X, diver_PIVOT_Y,
-                                  fixed_to_pixel(lane->diver.x), lane->diver.y, lane->moving_left,
-                                  first_sprite + used);
+    if (lane->diver_active) {
+        used += render_entity(SPRITE_TILE_DIVER, lane->diver_x, lane->base_y, lane->moving_left,
+                              first_sprite + used);
     }
     used += render_torpedo(&lane->torpedo, first_sprite + used);
     return used;
@@ -457,16 +517,16 @@ void game_render(GameState *game) {
     const Player *player = &game->player;
     uint8_t next_sprite = 0;
 
+    /* First, while still in VBlank (see game.h). */
+    render_hud(game);
+
     /* Lowest OAM slots win when a scanline overflows, so the player goes first. */
-    next_sprite += render_metasprite(player_sub_metasprites[0], SPRITE_TILE_PLAYER_SUB,
-                                     player_sub_PIVOT_X, player_sub_PIVOT_Y,
-                                     fixed_to_pixel(player->x), (uint8_t)fixed_to_pixel(player->y),
-                                     player->facing_left, next_sprite);
+    next_sprite += render_entity(SPRITE_TILE_PLAYER_SUB, fixed_to_pixel(player->x),
+                                 (uint8_t)fixed_to_pixel(player->y), player->facing_left,
+                                 next_sprite);
     next_sprite += render_torpedo(&game->player_torpedo, next_sprite);
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         next_sprite += render_lane(&game->lanes[i], next_sprite);
     }
     hide_sprites_range(next_sprite, MAX_HARDWARE_SPRITES);
-
-    render_hud(game);
 }

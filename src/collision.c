@@ -16,64 +16,77 @@ enum Hitbox {
     TORPEDO_HITBOX_HEIGHT  = 2
 };
 
-uint8_t boxes_overlap(const Box *a, const Box *b) {
-    return a->x < b->x + b->width
-        && b->x < a->x + a->width
-        && a->y < b->y + b->height
-        && b->y < a->y + a->height;
+static inline uint8_t boxes_overlap(const Box *a, const Box *b) {
+    /* Vertical test first: within a lane it is the cheaper, more selective one. */
+    return a->top < b->bottom && b->top < a->bottom
+        && a->left < b->right && b->left < a->right;
 }
 
-static void entity_box(Box *box, int16_t x, int16_t y) {
-    box->x = x + ENTITY_HITBOX_INSET_X;
-    box->y = y + ENTITY_HITBOX_INSET_Y;
-    box->width = ENTITY_HITBOX_WIDTH;
-    box->height = ENTITY_HITBOX_HEIGHT;
+/* x must be at least partly on screen (see entity_is_visible). */
+static inline void entity_box(Box *box, int16_t x, uint8_t y) {
+    box->left = (uint8_t)(x + COLLISION_X_OFFSET + ENTITY_HITBOX_INSET_X);
+    box->right = box->left + ENTITY_HITBOX_WIDTH;
+    box->top = y + ENTITY_HITBOX_INSET_Y;
+    box->bottom = box->top + ENTITY_HITBOX_HEIGHT;
 }
 
+/* Active torpedoes are always partly on screen (update_torpedo retires them). */
 static void torpedo_box(Box *box, const Torpedo *torpedo) {
-    box->x = fixed_to_pixel(torpedo->x);
-    box->y = torpedo->y + TORPEDO_HITBOX_INSET_Y;
-    box->width = TORPEDO_HITBOX_WIDTH;
-    box->height = TORPEDO_HITBOX_HEIGHT;
+    box->left = (uint8_t)(fixed_to_pixel(torpedo->x) + COLLISION_X_OFFSET);
+    box->right = box->left + TORPEDO_HITBOX_WIDTH;
+    box->top = torpedo->y + TORPEDO_HITBOX_INSET_Y;
+    box->bottom = box->top + TORPEDO_HITBOX_HEIGHT;
 }
 
-static void lane_entity_box(Box *box, const LaneEntity *entity) {
-    entity_box(box, fixed_to_pixel(entity->x), entity->y);
+/*
+ * Broad phase: lane members stay within LANE_REACH of the lane's base_y, so
+ * a single 8-bit compare rules out whole lanes before any box test.
+ */
+static uint8_t is_near_lane(uint8_t y, const Lane *lane) {
+    return (uint8_t)(y + LANE_REACH) > lane->base_y && y < (uint8_t)(lane->base_y + LANE_REACH);
+}
+
+/*
+ * Members queued off screen can't be hit, and their x doesn't fit collision
+ * space. Returns the bit of the first living, visible member overlapping box.
+ */
+static uint8_t find_hit_member(const Lane *lane, const Box *box) {
+    Box member_hitbox;
+    /* Locals instead of lane->...: each pointer dereference costs extra on the SM83. */
+    uint8_t alive = lane->alive_mask;
+    int16_t step = lane->member_step;
+    uint8_t y = lane->enemy_y;
+    int16_t x = lane->leader_x;
+
+    for (uint8_t bit = 1; bit <= alive; bit <<= 1, x += step) {
+        if (!(alive & bit) || !entity_is_visible(x)) {
+            continue;
+        }
+        entity_box(&member_hitbox, x, y);
+        if (boxes_overlap(box, &member_hitbox)) {
+            return bit;
+        }
+    }
+    return 0;
 }
 
 static void check_player_torpedo(Torpedo *torpedo, Lane *lane) {
     Box torpedo_hitbox;
-    Box enemy_hitbox;
+    uint8_t hit;
 
-    if (!torpedo->active) {
-        return;
-    }
     torpedo_box(&torpedo_hitbox, torpedo);
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        LaneEntity *enemy = &lane->enemies[i];
-        if (!enemy->active) {
-            continue;
-        }
-        lane_entity_box(&enemy_hitbox, enemy);
-        if (boxes_overlap(&torpedo_hitbox, &enemy_hitbox)) {
-            enemy->active = 0;
-            torpedo->active = 0;
-            return;
-        }
+    hit = find_hit_member(lane, &torpedo_hitbox);
+    if (hit) {
+        lane->alive_mask &= (uint8_t)~hit;
+        torpedo->active = 0;
     }
 }
 
 static void check_player_against_lane(GameState *game, const Box *player_hitbox, Lane *lane) {
     Box other_hitbox;
 
-    for (uint8_t i = 0; i < LANE_MAX_ENTITIES; i++) {
-        if (!lane->enemies[i].active) {
-            continue;
-        }
-        lane_entity_box(&other_hitbox, &lane->enemies[i]);
-        if (boxes_overlap(player_hitbox, &other_hitbox)) {
-            game->player_hit = 1;
-        }
+    if (find_hit_member(lane, player_hitbox)) {
+        game->player_hit = 1;
     }
 
     if (lane->torpedo.active) {
@@ -84,23 +97,30 @@ static void check_player_against_lane(GameState *game, const Box *player_hitbox,
     }
 
     /* A full sub can't take more divers; they swim on. */
-    if (lane->diver.active && game->divers < MAX_DIVERS_ON_BOARD) {
-        lane_entity_box(&other_hitbox, &lane->diver);
+    if (lane->diver_active && entity_is_visible(lane->diver_x)
+        && game->divers < MAX_DIVERS_ON_BOARD) {
+        entity_box(&other_hitbox, lane->diver_x, lane->base_y);
         if (boxes_overlap(player_hitbox, &other_hitbox)) {
-            lane->diver.active = 0;
+            lane->diver_active = 0;
             game->divers++;
         }
     }
 }
 
 void collisions_update(GameState *game) {
+    Torpedo *torpedo = &game->player_torpedo;
+    uint8_t player_y = (uint8_t)fixed_to_pixel(game->player.y);
     Box player_hitbox;
 
-    entity_box(&player_hitbox, fixed_to_pixel(game->player.x), fixed_to_pixel(game->player.y));
+    entity_box(&player_hitbox, fixed_to_pixel(game->player.x), player_y);
 
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         Lane *lane = &game->lanes[i];
-        check_player_torpedo(&game->player_torpedo, lane);
-        check_player_against_lane(game, &player_hitbox, lane);
+        if (torpedo->active && is_near_lane(torpedo->y, lane)) {
+            check_player_torpedo(torpedo, lane);
+        }
+        if (is_near_lane(player_y, lane)) {
+            check_player_against_lane(game, &player_hitbox, lane);
+        }
     }
 }

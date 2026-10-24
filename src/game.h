@@ -99,7 +99,15 @@ enum LaneTuning {
     SPAWN_DELAY_RANDOM_MASK   = 127,   /* plus 0..127 random frames */
     LANE_FIRST_SPAWN_DELAY    = 30,
     LANE_FIRST_SPAWN_STAGGER  = 45,    /* so lanes don't all fill at once */
-    DIVER_CHANCE              = 128    /* out of 256, per spawned group */
+    DIVER_CHANCE              = 128,   /* out of 256, per spawned group */
+
+    /*
+     * CPU budget (not the scanline one): each enemy costs ~5 of the 154
+     * scanlines in a frame. These caps keep the worst case near 80% of the
+     * frame, leaving room for the remaining epics. See GUIA section 2.1.
+     */
+    MAX_ACTIVE_ENEMIES        = 8,
+    MAX_ENEMY_TORPEDOES       = 2
 };
 
 enum EnemyTuning {
@@ -110,10 +118,13 @@ enum EnemyTuning {
     SHARK_WAVE_AMPLITUDE        = 4,               /* px, see shark_wave in game.c */
     SHARK_WAVE_STEPS            = 32,
     SHARK_WAVE_FRAMES_PER_STEP  = 2,               /* full wave every 64 frames */
-    SHARK_WAVE_MEMBER_OFFSET    = 8,               /* steps between group members */
+
+    /* Lane members never reach further than this from the lane's base_y. */
+    LANE_REACH                  = ENTITY_HEIGHT + SHARK_WAVE_AMPLITUDE,
 
     ENEMY_FIRE_DELAY_MIN        = 60,
-    ENEMY_FIRE_DELAY_RANDOM_MASK = 63
+    ENEMY_FIRE_DELAY_RANDOM_MASK = 63,
+    ENEMY_FIRE_RETRY_DELAY      = 8                /* no shot lined up: look again later */
 };
 
 /* Game rules tuning (see GUIA_SEAQUEST_GB.md, sections 3.5-3.7). */
@@ -126,6 +137,20 @@ enum RulesTuning {
     OXYGEN_MAX          = OXYGEN_BAR_TILES * 8,
     OXYGEN_DRAIN_FRAMES = 10                  /* frames per unit: full tank ~16 s */
 };
+
+/*
+ * True when first <= value < first + count. The SM83 has no signed-compare
+ * flags, so each signed 16-bit comparison costs ~20 instructions; shifting the
+ * range to start at 0 turns both bounds into one unsigned comparison.
+ */
+static inline uint8_t is_in_range(int16_t value, int16_t first, uint16_t count) {
+    return (uint16_t)(value - first) < count;
+}
+
+/* A 16-px-wide entity at screen x is at least partly visible. */
+static inline uint8_t entity_is_visible(int16_t x) {
+    return is_in_range(x, -ENTITY_WIDTH + 1, SCREEN_PX_WIDTH + ENTITY_WIDTH - 1);
+}
 
 typedef enum {
     ENEMY_SHARK,
@@ -150,27 +175,41 @@ typedef struct {
     uint8_t moving_left;
 } Torpedo;
 
-/* An enemy or a diver. y is recomputed every frame from the lane. */
+/*
+ * A lane holds one group: same type, same direction, entering together, plus
+ * an optional diver. The group moves as a unit: members trail the leader by
+ * member_step and share its y, so a member is just an "alive" bit. Visit the
+ * members with:
+ *
+ *   int16_t x = lane->leader_x;
+ *   for (uint8_t bit = 1; bit <= lane->alive_mask; bit <<= 1, x += lane->member_step)
+ *       if (lane->alive_mask & bit) ...
+ *
+ * The loop stops right after the last living member, so empty lanes cost
+ * almost nothing; on this CPU, looping over dead slots was a large share of
+ * every frame.
+ */
 typedef struct {
-    Fixed x;
-    uint8_t y;
-    uint8_t active;
-} LaneEntity;
-
-/* A lane holds one group: same type, same direction, entering together. */
-typedef struct {
-    LaneEntity enemies[LANE_MAX_ENTITIES];
-    LaneEntity diver;
-    Torpedo torpedo;          /* one enemy torpedo per lane keeps the scanline budget */
+    uint8_t alive_mask;       /* bit i set: member i is alive; 0 = no group */
+    Fixed group_x;            /* leader's (member 0) x, even after it is destroyed */
+    int16_t leader_x;         /* group_x in pixels, refreshed every frame */
+    int8_t member_step;       /* px from one member to the next (behind the leader) */
+    uint8_t enemy_y;          /* shared by all members; sharks bob around base_y */
     EnemyType enemy_type;
-    uint8_t moving_left;
+    uint8_t moving_left;      /* shared by the group and the diver */
+
+    uint8_t diver_active;
+    Fixed diver_fixed_x;      /* divers swim slower than the group */
+    int16_t diver_x;          /* diver_fixed_x in pixels; the diver's y is base_y */
+
+    Torpedo torpedo;          /* one enemy torpedo per lane keeps the scanline budget */
+    uint8_t base_y;
     uint8_t spawn_timer;      /* frames left before the next group, while empty */
     uint8_t fire_timer;       /* frames left before an enemy sub may fire */
 } Lane;
 
 /* What the HUD currently shows, so render only touches VRAM on changes. */
 typedef struct {
-    uint32_t score;
     uint8_t oxygen_tiles;
     uint8_t divers;
     uint8_t reserves;
@@ -182,7 +221,13 @@ typedef struct {
     Lane lanes[LANE_COUNT];
     uint8_t player_hit;       /* set by collisions, handled at the end of the update */
     uint8_t frame;            /* wraps; drives animations like the shark wave */
-    uint32_t score;
+    /*
+     * Decimal digits, most significant first. Extracting digits from a
+     * uint32_t takes 32-bit divisions in software, which cost over a full
+     * frame for 6 digits; digits make drawing the score a plain copy.
+     */
+    uint8_t score_digits[SCORE_DIGITS];
+    uint8_t score_changed;    /* the HUD redraws the score when set */
     uint8_t oxygen;
     uint8_t oxygen_drain_timer;
     uint8_t divers;
@@ -193,6 +238,11 @@ typedef struct {
 /* Loads tiles, draws the static background and resets the game. */
 void game_init(GameState *game);
 void game_update(GameState *game, const InputState *input);
+/*
+ * Call right after vsync(): the HUD writes to VRAM first, while the VBlank
+ * period lets them through without waiting; sprites go to shadow OAM, which
+ * is copied to the hardware at the next VBlank.
+ */
 void game_render(GameState *game);
 
 #endif

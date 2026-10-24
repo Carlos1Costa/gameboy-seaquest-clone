@@ -38,7 +38,8 @@ void main(void) {
     while (1) {
         input_read(&input);
         game_update(&game, &input);
-        game_render(&game);
+        /* Render right after vsync so VRAM writes land in VBlank (see game_render). */
         vsync();
+        game_render(&game);
     }
 }

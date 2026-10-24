@@ -5,15 +5,22 @@
 
 #include "game.h"
 
-/* Axis-aligned bounding box in screen pixels. */
+/*
+ * Axis-aligned bounding box with precomputed edges (right/bottom exclusive).
+ * x is in collision space: screen x + COLLISION_X_OFFSET, so anything at
+ * least partly visible has a positive x that fits in a byte and every
+ * comparison stays 8-bit, which is much cheaper on the Game Boy's CPU.
+ */
 typedef struct {
-    int16_t x;
-    int16_t y;
-    uint8_t width;
-    uint8_t height;
+    uint8_t left;
+    uint8_t right;
+    uint8_t top;
+    uint8_t bottom;
 } Box;
 
-uint8_t boxes_overlap(const Box *a, const Box *b);
+enum CollisionSpace {
+    COLLISION_X_OFFSET = ENTITY_WIDTH
+};
 
 /*
  * Checks every collision pair and applies its direct effect: destroys
