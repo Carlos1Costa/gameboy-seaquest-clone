@@ -3,7 +3,6 @@
 #
 #   make        build Seaquest.gb
 #   make run    build and run in mgba-qt
-#   make hello  build the Hello toolchain smoke test (hello/main.c)
 #   make clean  remove build outputs
 #
 
@@ -73,14 +72,8 @@ $(BUILDDIR) $(ASSETDIR):
 run: $(ROM)
 	$(EMULATOR) $(ROM)
 
-# Toolchain smoke test; remove once Seaquest reaches MVP.
-hello: Hello.gb
-
-Hello.gb: hello/main.c
-	$(LCC) -o $@ $<
-
 clean:
-	rm -rf $(BUILDDIR) $(ROM) $(PROJECTNAME).map $(PROJECTNAME).noi $(PROJECTNAME).sym $(PROJECTNAME).ihx Hello.gb
+	rm -rf $(BUILDDIR) $(ROM) $(PROJECTNAME).map $(PROJECTNAME).noi $(PROJECTNAME).sym $(PROJECTNAME).ihx
 
-.PHONY: all run hello clean
+.PHONY: all run clean
 .SECONDARY: $(ASSET_SOURCES) $(ASSET_HEADERS)

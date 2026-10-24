@@ -152,6 +152,28 @@ enum RulesTuning {
 };
 
 /*
+ * Scoring (GUIA 3.7). Values grow with each full load surfaced (the wave).
+ * Divers are paid when a full load is surfaced: 6 x the diver value.
+ */
+enum ScoringTuning {
+    ENEMY_POINTS_BASE   = 20,
+    ENEMY_POINTS_STEP   = 10,
+    ENEMY_POINTS_MAX    = 90,
+    DIVER_POINTS_BASE   = 50,
+    DIVER_POINTS_STEP   = 50,
+    DIVER_POINTS_MAX    = 1000,
+
+    /* An extra reserve each time the ten-thousands change (every 10,000 pts). */
+    SCORE_TEN_THOUSANDS_DIGIT = SCORE_DIGITS - 5
+};
+
+/* Difficulty (GUIA 3.8): enemies get faster with each wave. */
+enum DifficultyTuning {
+    ENEMY_SPEED_PER_WAVE = 2,                 /* +1/8 px/frame per wave */
+    ENEMY_SPEED_MAX      = 2 * FIXED_ONE      /* 2 px/frame */
+};
+
+/*
  * True when first <= value < first + count. The SM83 has no signed-compare
  * flags, so each signed 16-bit comparison costs ~20 instructions; shifting the
  * range to start at 0 turns both bounds into one unsigned comparison.
@@ -213,6 +235,7 @@ typedef struct {
  */
 typedef struct {
     uint8_t alive_mask;       /* bit i set: member i is alive; 0 = no group */
+    Fixed speed;              /* set at spawn from the enemy type and the wave */
     Fixed group_x;            /* leader's (member 0) x, even after it is destroyed */
     int16_t leader_x;         /* group_x in pixels, refreshed every frame */
     int8_t member_step;       /* px from one member to the next (behind the leader) */
@@ -235,6 +258,7 @@ typedef struct {
     uint8_t oxygen_tiles;
     uint8_t divers;
     uint8_t reserves;
+    uint8_t game_over;        /* the GAME OVER banner is on screen */
 } HudCache;
 
 typedef struct {
@@ -242,6 +266,8 @@ typedef struct {
     Torpedo player_torpedo;   /* only one player torpedo on screen at a time */
     Lane lanes[LANE_COUNT];
     uint8_t player_hit;       /* set by collisions, handled at the end of the update */
+    uint8_t enemies_destroyed; /* set by collisions this frame, scored by game.c */
+    uint8_t game_over;        /* the last life is gone; waiting for START */
     uint8_t frame;            /* wraps; drives animations like the shark wave */
     /*
      * Decimal digits, most significant first. Extracting digits from a
@@ -260,6 +286,8 @@ typedef struct {
 
 /* Loads tiles, draws the static background and resets the game. */
 void game_init(GameState *game);
+/* Starts a new game after a game over. */
+void game_restart(GameState *game);
 void game_update(GameState *game, const InputState *input);
 /*
  * Call right after vsync(): the HUD writes to VRAM first, while the VBlank

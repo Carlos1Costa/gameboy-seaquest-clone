@@ -120,9 +120,16 @@ O jogador pilota um submarino para **resgatar mergulhadores (divers)** no fundo 
 - **Bônus:** pontos extras proporcionais ao oxigênio restante ao surfar com carga cheia.
 - **Vidas extras:** ganha um sub reserva a cada **10.000 pts** (até no máx **6** reservas). Começa com 1 ativo + 3 reservas.
 
+### 3.7.1. Como foi implementado (EPIC E)
+- **Score em dígitos decimais**, somado dígito a dígito (sem divisões de 32 bits); trava em 999999 em vez de voltar a zero.
+- **Inimigo abatido:** `20 + 10 × wave` pontos (máx. 90). **Divers** são pagos ao subir com carga cheia: `6 × (50 + 50 × wave)` (máx. 1000 cada), usando o valor da wave **antes** de avançá-la. Subir com carga parcial não paga nada. *(Bônus de O₂ é o F1.2.)*
+- **Vida extra** a cada 10.000 pontos (quando a dezena de milhar muda), até 6 reservas.
+- **Game over:** ao perder a última vida, o mundo congela, os sprites somem e uma faixa "GAME OVER / PRESS START" cobre a água; START recomeça do zero. A tela de título e o polimento ficam no F1.4.
+
 ### 3.8. Dificuldade / waves
 - Completar uma wave (surfar com 6) → inimigos mais rápidos, valores de ponto maiores, e eventualmente o patrol sub na superfície.
 - Progressão clássica "só fica mais rápido e mais cheio". Sem fim definido — joga até perder todas as vidas.
+- **Implementado (E1.4):** a velocidade dos inimigos sobe 1/8 px/frame por wave (`ENEMY_SPEED_PER_WAVE`), até 2 px/frame; a quantidade fica limitada pelos tetos de CPU (seção 2.1). Divers e torpedos mantêm a velocidade.
 
 ---
 
@@ -212,9 +219,8 @@ seaquest/
 │   ├── collision.c/.h  # AABB + checagens (único lugar de colisão)
 │   └── input.c / .h     # leitura e debounce do gamepad (fino; pode fundir em main se ficar pequeno)
 ├── res/                 # PNGs-fonte da pixelart (entrada do png2asset; versionados)
-├── build/               # gerado pelo make (não versionado)
-│   └── assets/          # .c/.h gerados pelo png2asset a partir de res/*.png
-└── hello/               # smoke test da toolchain (`make hello`); remover após o MVP
+└── build/               # gerado pelo make (não versionado)
+    └── assets/          # .c/.h gerados pelo png2asset a partir de res/*.png
 ```
 
 **Pipeline de assets (png2asset):**

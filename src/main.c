@@ -37,7 +37,14 @@ void main(void) {
 
     while (1) {
         input_read(&input);
-        game_update(&game, &input);
+        if (game.game_over) {
+            /* The world stays frozen behind the GAME OVER banner until START. */
+            if (input.pressed & J_START) {
+                game_restart(&game);
+            }
+        } else {
+            game_update(&game, &input);
+        }
         /* Render right after vsync so VRAM writes land in VBlank (see game_render). */
         vsync();
         game_render(&game);

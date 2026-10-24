@@ -70,7 +70,8 @@ static uint8_t find_hit_member(const Lane *lane, const Box *box) {
     return 0;
 }
 
-static void check_player_torpedo(Torpedo *torpedo, Lane *lane) {
+static void check_player_torpedo(GameState *game, Lane *lane) {
+    Torpedo *torpedo = &game->player_torpedo;
     Box torpedo_hitbox;
     uint8_t hit;
 
@@ -79,6 +80,7 @@ static void check_player_torpedo(Torpedo *torpedo, Lane *lane) {
     if (hit) {
         lane->alive_mask &= (uint8_t)~hit;
         torpedo->active = 0;
+        game->enemies_destroyed++;
     }
 }
 
@@ -117,7 +119,7 @@ void collisions_update(GameState *game) {
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         Lane *lane = &game->lanes[i];
         if (torpedo->active && is_near_lane(torpedo->y, lane)) {
-            check_player_torpedo(torpedo, lane);
+            check_player_torpedo(game, lane);
         }
         if (is_near_lane(player_y, lane)) {
             check_player_against_lane(game, &player_hitbox, lane);

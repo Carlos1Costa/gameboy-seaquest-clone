@@ -24,7 +24,8 @@ enum CollisionSpace {
 
 /*
  * Checks every collision pair and applies its direct effect: destroys
- * torpedoed enemies, rescues touched divers and sets game->player_hit.
+ * torpedoed enemies (counted in game->enemies_destroyed), rescues touched
+ * divers and sets game->player_hit.
  * Consequences of a hit (death, respawn) are left to game.c.
  */
 void collisions_update(GameState *game);

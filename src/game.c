@@ -36,7 +36,18 @@ enum BackgroundTile {
     BG_TILE_DIVER     = 6,
     BG_TILE_LIFE      = 7,
     BG_TILE_DIGIT_0   = 8,
-    BG_TILE_LETTER_O  = 18
+    BG_TILE_LETTER_FIRST = 18   /* the letters in letter_glyphs, in that order */
+};
+
+/* Letters with a glyph in res/hud_tiles.png, in tile order. */
+static const char letter_glyphs[] = "AEGMOPRSTV";
+
+/* GAME OVER banner across the water, as a light band like the HUD. */
+enum BannerLayout {
+    BANNER_FIRST_ROW = 7,
+    BANNER_ROWS      = 5,
+    BANNER_TITLE_ROW = 8,
+    BANNER_HINT_ROW  = 10
 };
 
 /* One period of round(SHARK_WAVE_AMPLITUDE * sin(t)), in SHARK_WAVE_STEPS steps. */
@@ -45,8 +56,35 @@ static const int8_t shark_wave[SHARK_WAVE_STEPS] = {
      0, -1, -2, -2, -3, -3, -4, -4, -4, -4, -4, -3, -3, -2, -2, -1
 };
 
+/* Characters without a glyph (including space) draw as the plain HUD tile. */
+static uint8_t tile_for_char(char c) {
+    if (c >= '0' && c <= '9') {
+        return BG_TILE_DIGIT_0 + (c - '0');
+    }
+    for (uint8_t i = 0; letter_glyphs[i] != '\0'; i++) {
+        if (letter_glyphs[i] == c) {
+            return BG_TILE_LETTER_FIRST + i;
+        }
+    }
+    return BG_TILE_HUD;
+}
+
+static void draw_text(uint8_t column, uint8_t row, const char *text) {
+    uint8_t tiles[SCREEN_TILES_WIDE];
+    uint8_t length = 0;
+    while (text[length] != '\0' && length < SCREEN_TILES_WIDE) {
+        tiles[length] = tile_for_char(text[length]);
+        length++;
+    }
+    set_bkg_tiles(column, row, length, 1, tiles);
+}
+
+/* Centers text on the 20-tile-wide screen. */
+static void draw_centered_text(uint8_t row, const char *text, uint8_t length) {
+    draw_text((SCREEN_TILES_WIDE - length) / 2, row, text);
+}
+
 static void draw_static_background(void) {
-    const uint8_t oxygen_label[2] = { BG_TILE_LETTER_O, BG_TILE_DIGIT_0 + 2 };
     const uint8_t water_rows = ROW_SEABED - ROW_WATER_FIRST;
 
     fill_bkg_rect(0, ROW_SCORE, SCREEN_TILES_WIDE, ROW_SURFACE - ROW_SCORE, BG_TILE_HUD);
@@ -54,7 +92,7 @@ static void draw_static_background(void) {
     fill_bkg_rect(0, ROW_WATER_FIRST, SCREEN_TILES_WIDE, water_rows, BG_TILE_WATER);
     fill_bkg_rect(0, ROW_SEABED, SCREEN_TILES_WIDE, 1, BG_TILE_SEABED);
     fill_bkg_rect(0, ROW_OXYGEN, SCREEN_TILES_WIDE, SCREEN_TILES_HIGH - ROW_OXYGEN, BG_TILE_HUD);
-    set_bkg_tiles(OXYGEN_LABEL_COLUMN, ROW_OXYGEN, 2, 1, oxygen_label);
+    draw_text(OXYGEN_LABEL_COLUMN, ROW_OXYGEN, "O2");
 }
 
 static void reset_hud_cache(HudCache *hud) {
@@ -62,6 +100,7 @@ static void reset_hud_cache(HudCache *hud) {
     hud->oxygen_tiles = 0xFF;
     hud->divers = 0xFF;
     hud->reserves = 0xFF;
+    hud->game_over = 0;
 }
 
 /* Empties every lane and staggers their first spawns. */
@@ -86,6 +125,7 @@ static void respawn_player(GameState *game) {
     player->submerged = 0;
     game->player_torpedo.active = 0;
     game->player_hit = 0;
+    game->enemies_destroyed = 0;
     game->oxygen = 0;
 }
 
@@ -99,6 +139,7 @@ static void reset_game(GameState *game) {
     game->divers = 0;
     game->reserves = STARTING_RESERVES;
     game->wave = 0;
+    game->game_over = 0;
 }
 
 void game_init(GameState *game) {
@@ -116,6 +157,10 @@ void game_init(GameState *game) {
     game->frame = 0;
     reset_game(game);
     reset_hud_cache(&game->hud);
+}
+
+void game_restart(GameState *game) {
+    reset_game(game);
 }
 
 static inline Fixed step_down(Fixed value, Fixed step, Fixed min) {
@@ -197,7 +242,13 @@ static uint8_t count_members(uint8_t alive_mask) {
     return (alive_mask & 1) + ((alive_mask >> 1) & 1) + ((alive_mask >> 2) & 1);
 }
 
-static void spawn_group(Lane *lane, SpawnBudget *budget) {
+static Fixed enemy_speed(EnemyType type, uint8_t wave) {
+    Fixed speed = (type == ENEMY_SHARK) ? SHARK_SPEED : ENEMY_SUB_SPEED;
+    speed += wave * ENEMY_SPEED_PER_WAVE;
+    return (speed > ENEMY_SPEED_MAX) ? ENEMY_SPEED_MAX : speed;
+}
+
+static void spawn_group(Lane *lane, SpawnBudget *budget, uint8_t wave) {
     uint8_t roll = rand();
     uint8_t has_diver = rand() < DIVER_CHANCE;
     /* The diver takes one of the lane's entity slots. */
@@ -212,6 +263,7 @@ static void spawn_group(Lane *lane, SpawnBudget *budget) {
 
     lane->moving_left = moving_left;
     lane->enemy_type = (roll & 2) ? ENEMY_SUB : ENEMY_SHARK;
+    lane->speed = enemy_speed(lane->enemy_type, wave);
     lane->alive_mask = (uint8_t)((1 << enemy_count) - 1);
     lane->group_x = group_entry_x(moving_left, 0);
     lane->leader_x = fixed_to_pixel(lane->group_x);
@@ -244,7 +296,7 @@ static uint8_t is_fully_on_screen(int16_t x) {
 }
 
 static void update_group(Lane *lane, uint8_t frame) {
-    Fixed speed = (lane->enemy_type == ENEMY_SHARK) ? SHARK_SPEED : ENEMY_SUB_SPEED;
+    Fixed speed = lane->speed;
     uint8_t moving_left = lane->moving_left;
     int16_t x;
 
@@ -302,14 +354,15 @@ static void update_enemy_fire(Lane *lane, int16_t player_x, SpawnBudget *budget)
     lane->fire_timer = ENEMY_FIRE_RETRY_DELAY;
 }
 
-static void update_lane(Lane *lane, uint8_t frame, int16_t player_x, SpawnBudget *budget) {
+static void update_lane(Lane *lane, uint8_t frame, uint8_t wave, int16_t player_x,
+                        SpawnBudget *budget) {
     if (lane->alive_mask == 0 && !lane->diver_active) {
         if (lane->spawn_timer != 0) {
             lane->spawn_timer--;
         } else {
             /* At the enemy cap, wait a full delay before trying again. */
             if (budget->enemies_left != 0) {
-                spawn_group(lane, budget);
+                spawn_group(lane, budget, wave);
             }
             lane->spawn_timer = SPAWN_DELAY_MIN + (rand() & SPAWN_DELAY_RANDOM_MASK);
         }
@@ -334,6 +387,52 @@ static void compute_spawn_budget(const GameState *game, SpawnBudget *budget) {
     }
 }
 
+static uint16_t enemy_points(uint8_t wave) {
+    uint16_t points = ENEMY_POINTS_BASE + wave * ENEMY_POINTS_STEP;
+    return (points > ENEMY_POINTS_MAX) ? ENEMY_POINTS_MAX : points;
+}
+
+static uint16_t diver_points(uint8_t wave) {
+    uint16_t points = DIVER_POINTS_BASE + wave * DIVER_POINTS_STEP;
+    return (points > DIVER_POINTS_MAX) ? DIVER_POINTS_MAX : points;
+}
+
+/* The score in units of 10,000 (its two leading digits). */
+static uint8_t score_ten_thousands(const uint8_t *digits) {
+    return digits[SCORE_TEN_THOUSANDS_DIGIT - 1] * 10 + digits[SCORE_TEN_THOUSANDS_DIGIT];
+}
+
+/*
+ * Decimal add, digit by digit from the right. The 16-bit division only runs
+ * when points are scored, never every frame. Every 10,000 points earn a
+ * reserve, up to MAX_RESERVES.
+ */
+static void add_score(GameState *game, uint16_t points) {
+    uint8_t *digits = game->score_digits;
+    uint8_t ten_thousands_before = score_ten_thousands(digits);
+    uint8_t carry = 0;
+
+    for (int8_t i = SCORE_DIGITS - 1; i >= 0 && (points != 0 || carry != 0); i--) {
+        uint8_t sum = digits[i] + (uint8_t)(points % 10) + carry;
+        points /= 10;
+        carry = sum >= 10;
+        digits[i] = carry ? sum - 10 : sum;
+    }
+    if (carry) {
+        /* Past 999999: stay at the maximum instead of wrapping to zero. */
+        for (uint8_t i = 0; i < SCORE_DIGITS; i++) {
+            digits[i] = 9;
+        }
+    }
+    game->score_changed = 1;
+
+    for (uint8_t earned = score_ten_thousands(digits) - ten_thousands_before; earned != 0; earned--) {
+        if (game->reserves < MAX_RESERVES) {
+            game->reserves++;
+        }
+    }
+}
+
 /* Losing the sub loses every diver on board, as in the original. */
 static void start_dying(GameState *game) {
     game->player.state = PLAYER_DYING;
@@ -342,16 +441,13 @@ static void start_dying(GameState *game) {
     game->divers = 0;
 }
 
-/*
- * Once the explosion ends: lose a reserve and restart the round. With no
- * reserves left the game restarts (placeholder until the game over flow, E1.3).
- */
+/* Once the explosion ends: lose a reserve and restart the round, or end the game. */
 static void update_dying(GameState *game) {
     if (--game->player.state_timer != 0) {
         return;
     }
     if (game->reserves == 0) {
-        reset_game(game);
+        game->game_over = 1;
         return;
     }
     game->reserves--;
@@ -377,6 +473,7 @@ static void surface(GameState *game) {
     }
     if (game->divers == MAX_DIVERS_ON_BOARD) {
         /* Full load: everyone is dropped off, the ocean clears and the next wave starts. */
+        add_score(game, MAX_DIVERS_ON_BOARD * diver_points(game->wave));
         game->divers = 0;
         game->wave++;
         reset_lanes(game);
@@ -430,10 +527,14 @@ void game_update(GameState *game, const InputState *input) {
     player_x = fixed_to_pixel(player->x);
     compute_spawn_budget(game, &budget);
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
-        update_lane(&game->lanes[i], game->frame, player_x, &budget);
+        update_lane(&game->lanes[i], game->frame, game->wave, player_x, &budget);
     }
 
     collisions_update(game);
+    if (game->enemies_destroyed != 0) {
+        add_score(game, game->enemies_destroyed * enemy_points(game->wave));
+        game->enemies_destroyed = 0;
+    }
     if (game->player_hit) {
         start_dying(game);
         return;
@@ -476,6 +577,16 @@ static uint8_t is_oxygen_alarm_off_phase(const GameState *game) {
         && (game->frame / (uint8_t)OXYGEN_ALARM_BLINK_FRAMES) & 1;
 }
 
+static void draw_game_over_banner(void) {
+    fill_bkg_rect(0, BANNER_FIRST_ROW, SCREEN_TILES_WIDE, BANNER_ROWS, BG_TILE_HUD);
+    draw_centered_text(BANNER_TITLE_ROW, "GAME OVER", 9);
+    draw_centered_text(BANNER_HINT_ROW, "PRESS START", 11);
+}
+
+static void clear_game_over_banner(void) {
+    fill_bkg_rect(0, BANNER_FIRST_ROW, SCREEN_TILES_WIDE, BANNER_ROWS, BG_TILE_WATER);
+}
+
 static void render_hud(GameState *game) {
     HudCache *hud = &game->hud;
     /* Round up so the last tile only empties when oxygen is truly zero. */
@@ -502,6 +613,14 @@ static void render_hud(GameState *game) {
         hud->divers = game->divers;
         draw_icon_counter(DIVERS_COLUMN, ROW_DIVERS, game->divers, MAX_DIVERS_ON_BOARD,
                           BG_TILE_DIVER, BG_TILE_HUD);
+    }
+    if (hud->game_over != game->game_over) {
+        hud->game_over = game->game_over;
+        if (game->game_over) {
+            draw_game_over_banner();
+        } else {
+            clear_game_over_banner();
+        }
     }
 }
 
@@ -601,6 +720,12 @@ void game_render(GameState *game) {
 
     /* First, while still in VBlank (see game.h). */
     render_hud(game);
+
+    /* Sprites would draw over the GAME OVER banner. */
+    if (game->game_over) {
+        hide_sprites_range(0, MAX_HARDWARE_SPRITES);
+        return;
+    }
 
     /* Lowest OAM slots win when a scanline overflows, so the player goes first. */
     if (player->state != PLAYER_DYING) {
