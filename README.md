@@ -30,5 +30,5 @@ Art lives in `res/*.png` and is converted by `png2asset` (bundled with GBDK) int
 
 ## Layout
 
-    src/    game code (main.c, game.c/.h, collision.c/.h)
+    src/    game code (main.c, game.c/.h, collision.c/.h, sound.c/.h)
     res/    source PNGs

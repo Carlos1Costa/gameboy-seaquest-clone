@@ -167,6 +167,29 @@ enum ScoringTuning {
     SCORE_TEN_THOUSANDS_DIGIT = SCORE_DIGITS - 5
 };
 
+/*
+ * Surfacing with a full load (F1.2): the score is counted on screen. Divers
+ * leave the HUD one by one, then the oxygen bar drains into bonus points;
+ * only then does the tank refill.
+ */
+enum TallyTuning {
+    TALLY_DIVER_FRAMES     = 12,   /* frames per diver counted */
+    OXYGEN_BONUS_PER_UNIT  = 10,   /* full tank = 960 points */
+    TALLY_TICK_UNITS       = 4     /* a tick sound every N oxygen units */
+};
+
+/*
+ * The patrol sub (F1.1) sails the surface line from PATROL_FIRST_WAVE on.
+ * It can't be torpedoed and kills on contact, also while refilling.
+ */
+enum PatrolTuning {
+    PATROL_FIRST_WAVE        = 2,
+    PATROL_SPEED             = 12,        /* 0.75 px/frame */
+    PATROL_DELAY_MIN         = 90,        /* frames between passes */
+    PATROL_DELAY_RANDOM_MASK = 63,
+    PATROL_Y                 = PLAYER_MIN_Y
+};
+
 /* Difficulty (GUIA 3.8): enemies get faster with each wave. */
 enum DifficultyTuning {
     ENEMY_SPEED_PER_WAVE = 2,                 /* +1/8 px/frame per wave */
@@ -198,6 +221,7 @@ typedef struct {
 } InputState;
 
 typedef enum {
+    PLAYER_TALLYING,   /* surfaced with a full load: counting points, frozen */
     PLAYER_REFILLING,  /* at the surface, frozen until the tank is full */
     PLAYER_ACTIVE,
     PLAYER_DYING       /* exploding; the whole world waits */
@@ -208,7 +232,7 @@ typedef struct {
     Fixed y;
     uint8_t facing_left;
     PlayerState state;
-    uint8_t state_timer;   /* frames left in PLAYER_DYING */
+    uint8_t state_timer;   /* frames left in PLAYER_DYING; pacing in PLAYER_TALLYING */
     uint8_t submerged;     /* has dived since the last surfacing */
 } Player;
 
@@ -253,21 +277,38 @@ typedef struct {
     uint8_t fire_timer;       /* frames left before an enemy sub may fire */
 } Lane;
 
+typedef struct {
+    uint8_t active;
+    uint8_t moving_left;
+    Fixed fixed_x;
+    int16_t x;                /* fixed_x in pixels; y is PATROL_Y */
+    uint8_t timer;            /* frames until the next pass, while inactive */
+} Patrol;
+
+/* Text banner across the water; while one is up, sprites are hidden. */
+typedef enum {
+    BANNER_NONE,
+    BANNER_TITLE,
+    BANNER_GAME_OVER
+} Banner;
+
 /* What the HUD currently shows, so render only touches VRAM on changes. */
 typedef struct {
     uint8_t oxygen_tiles;
     uint8_t divers;
     uint8_t reserves;
-    uint8_t game_over;        /* the GAME OVER banner is on screen */
+    Banner banner;
 } HudCache;
 
 typedef struct {
     Player player;
     Torpedo player_torpedo;   /* only one player torpedo on screen at a time */
     Lane lanes[LANE_COUNT];
+    Patrol patrol;
     uint8_t player_hit;       /* set by collisions, handled at the end of the update */
     uint8_t enemies_destroyed; /* set by collisions this frame, scored by game.c */
-    uint8_t game_over;        /* the last life is gone; waiting for START */
+    uint8_t game_over;        /* the last life is gone */
+    Banner banner;
     uint8_t frame;            /* wraps; drives animations like the shark wave */
     /*
      * Decimal digits, most significant first. Extracting digits from a
@@ -286,8 +327,10 @@ typedef struct {
 
 /* Loads tiles, draws the static background and resets the game. */
 void game_init(GameState *game);
-/* Starts a new game after a game over. */
-void game_restart(GameState *game);
+/* Shows the title banner over the (frozen) ocean. */
+void game_show_title(GameState *game);
+/* Starts a new game; the seed should come from player timing (e.g. DIV when START is pressed). */
+void game_start(GameState *game, uint16_t seed);
 void game_update(GameState *game, const InputState *input);
 /*
  * Call right after vsync(): the HUD writes to VRAM first, while the VBlank

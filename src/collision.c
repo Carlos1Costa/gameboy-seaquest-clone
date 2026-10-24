@@ -116,6 +116,15 @@ void collisions_update(GameState *game) {
 
     entity_box(&player_hitbox, fixed_to_pixel(game->player.x), player_y);
 
+    /* The patrol sails the surface: only a sub at (or just under) it can touch it. */
+    if (game->patrol.active && player_y < PLAYER_SUBMERGED_Y && entity_is_visible(game->patrol.x)) {
+        Box patrol_hitbox;
+        entity_box(&patrol_hitbox, game->patrol.x, PATROL_Y);
+        if (boxes_overlap(&player_hitbox, &patrol_hitbox)) {
+            game->player_hit = 1;
+        }
+    }
+
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         Lane *lane = &game->lanes[i];
         if (torpedo->active && is_near_lane(torpedo->y, lane)) {

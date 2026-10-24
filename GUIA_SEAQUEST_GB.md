@@ -133,6 +133,12 @@ O jogador pilota um submarino para **resgatar mergulhadores (divers)** no fundo 
 
 ---
 
+### 3.9. Como foi implementado (EPIC F)
+- **Patrol sub:** patrulha a linha da superfície a partir da **wave 2** (`PATROL_FIRST_WAVE`), uma passada por vez, alternando o lado de entrada, com pausa aleatória de 1,5–2,5 s entre passadas. É **indestrutível** (o torpedo passa direto) e mata ao toque, inclusive durante o reabastecimento e a contagem. Cada nova vida ganha uma pausa antes da próxima passada. Usa o sprite do enemy sub.
+- **Contagem ao subir com 6 (bônus de O₂):** estado `PLAYER_TALLYING` — o oceano é limpo, cada diver sai do HUD somando seus pontos (um a cada 12 frames), depois a barra de O₂ esvazia somando **10 pts por unidade** (tanque cheio = 960), e só então a wave avança e o tanque reabastece.
+- **Efeitos sonoros** (`sound.c`): tiro, explosão de inimigo, explosão do sub, resgate, alarme de O₂ (bipe a cada piscada da barra), tique da contagem e vida extra. Cada efeito é uma escrita nos registradores do APU; o hardware cuida do envelope e da varredura, então não há custo por frame.
+- **Telas:** `main.c` tem a máquina de estados **título → jogo → game over → título**, tudo com START. As telas são faixas de texto sobre o oceano congelado, sem sprites. A semente aleatória vem do tempo que o jogador passa no título (mais o registrador DIV), então cada partida é diferente.
+
 ## 4. Escopo do MVP vs. versões futuras
 
 Para não afogar o projeto (trocadilho intencional 🌊), fatiamos em entregas jogáveis.
@@ -213,11 +219,11 @@ Seguindo o princípio "poucos arquivos coesos". Proposta inicial — **a discuti
 seaquest/
 ├── Makefile
 ├── src/
-│   ├── main.c          # entry point, game loop, state machine (title/play/gameover)
+│   ├── main.c          # entry point, input, game loop, state machine (title/play/gameover)
 │   ├── game.c / game.h # game state, entities, update/render de TODAS as entidades,
-│   │                   #   spawner, oxigênio, surfacing, score, waves
+│   │                   #   spawner, oxigênio, surfacing, score, waves, patrol, HUD
 │   ├── collision.c/.h  # AABB + checagens (único lugar de colisão)
-│   └── input.c / .h     # leitura e debounce do gamepad (fino; pode fundir em main se ficar pequeno)
+│   └── sound.c / .h    # efeitos sonoros (escritas diretas no APU)
 ├── res/                 # PNGs-fonte da pixelart (entrada do png2asset; versionados)
 └── build/               # gerado pelo make (não versionado)
     └── assets/          # .c/.h gerados pelo png2asset a partir de res/*.png

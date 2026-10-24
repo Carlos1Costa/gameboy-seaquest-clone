@@ -3,6 +3,7 @@
 
 #include "game.h"
 #include "collision.h"
+#include "sound.h"
 #include "player_sub.h"
 #include "torpedo.h"
 #include "shark.h"
@@ -40,9 +41,9 @@ enum BackgroundTile {
 };
 
 /* Letters with a glyph in res/hud_tiles.png, in tile order. */
-static const char letter_glyphs[] = "AEGMOPRSTV";
+static const char letter_glyphs[] = "AEGMOPQRSTUV";
 
-/* GAME OVER banner across the water, as a light band like the HUD. */
+/* Title / GAME OVER banner across the water, as a light band like the HUD. */
 enum BannerLayout {
     BANNER_FIRST_ROW = 7,
     BANNER_ROWS      = 5,
@@ -100,7 +101,7 @@ static void reset_hud_cache(HudCache *hud) {
     hud->oxygen_tiles = 0xFF;
     hud->divers = 0xFF;
     hud->reserves = 0xFF;
-    hud->game_over = 0;
+    hud->banner = BANNER_NONE;
 }
 
 /* Empties every lane and staggers their first spawns. */
@@ -116,6 +117,12 @@ static void reset_lanes(GameState *game) {
 }
 
 /* Every life starts at the surface with an empty tank, frozen until it fills (as in the original). */
+static void reset_patrol(Patrol *patrol) {
+    patrol->active = 0;
+    patrol->moving_left = 1;      /* toggled at each pass: the first one enters from the left */
+    patrol->timer = PATROL_DELAY_MIN;
+}
+
 static void respawn_player(GameState *game) {
     Player *player = &game->player;
     player->x = pixel_to_fixed(PLAYER_START_X);
@@ -127,6 +134,8 @@ static void respawn_player(GameState *game) {
     game->player_hit = 0;
     game->enemies_destroyed = 0;
     game->oxygen = 0;
+    /* Give the new life a moment at the surface before the patrol comes by. */
+    reset_patrol(&game->patrol);
 }
 
 static void reset_game(GameState *game) {
@@ -140,6 +149,7 @@ static void reset_game(GameState *game) {
     game->reserves = STARTING_RESERVES;
     game->wave = 0;
     game->game_over = 0;
+    game->banner = BANNER_NONE;
 }
 
 void game_init(GameState *game) {
@@ -152,14 +162,17 @@ void game_init(GameState *game) {
     set_bkg_data(0, hud_tiles_TILE_COUNT, hud_tiles_tiles);
     draw_static_background();
 
-    /* DIV is deterministic at boot; the title screen (F1.4) will reseed on START. */
-    initrand(DIV_REG);
     game->frame = 0;
     reset_game(game);
     reset_hud_cache(&game->hud);
 }
 
-void game_restart(GameState *game) {
+void game_show_title(GameState *game) {
+    game->banner = BANNER_TITLE;
+}
+
+void game_start(GameState *game, uint16_t seed) {
+    initrand(seed);
     reset_game(game);
 }
 
@@ -208,6 +221,7 @@ static void fire_player_torpedo(Torpedo *torpedo, const Player *player, const In
     }
     launch_torpedo(torpedo, fixed_to_pixel(player->x), (uint8_t)fixed_to_pixel(player->y),
                    player->facing_left);
+    sound_play(SOUND_TORPEDO);
 }
 
 static void update_torpedo(Torpedo *torpedo, Fixed speed) {
@@ -403,18 +417,33 @@ static uint8_t score_ten_thousands(const uint8_t *digits) {
 }
 
 /*
- * Decimal add, digit by digit from the right. The 16-bit division only runs
- * when points are scored, never every frame. Every 10,000 points earn a
- * reserve, up to MAX_RESERVES.
+ * Place values of score_digits[1..5]. A single award never reaches 100,000
+ * (the largest is a 1,000-point diver), so the leading digit only changes
+ * through carries.
+ */
+static const uint16_t score_place_values[SCORE_DIGITS - 1] = { 10000, 1000, 100, 10, 1 };
+
+/*
+ * Decimal add. The SM83 has no divide instruction, so % 10 and / 10 are
+ * slow software routines (they cost ~15 scanlines per kill); the points are
+ * split into digits by repeated subtraction instead, at most 9 per place.
+ * Every 10,000 points earn a reserve, up to MAX_RESERVES.
  */
 static void add_score(GameState *game, uint16_t points) {
     uint8_t *digits = game->score_digits;
     uint8_t ten_thousands_before = score_ten_thousands(digits);
+    uint8_t points_digits[SCORE_DIGITS] = { 0 };
     uint8_t carry = 0;
 
-    for (int8_t i = SCORE_DIGITS - 1; i >= 0 && (points != 0 || carry != 0); i--) {
-        uint8_t sum = digits[i] + (uint8_t)(points % 10) + carry;
-        points /= 10;
+    for (uint8_t i = 1; i < SCORE_DIGITS; i++) {
+        uint16_t place = score_place_values[i - 1];
+        while (points >= place) {
+            points -= place;
+            points_digits[i]++;
+        }
+    }
+    for (int8_t i = SCORE_DIGITS - 1; i >= 0; i--) {
+        uint8_t sum = digits[i] + points_digits[i] + carry;
         carry = sum >= 10;
         digits[i] = carry ? sum - 10 : sum;
     }
@@ -429,7 +458,26 @@ static void add_score(GameState *game, uint16_t points) {
     for (uint8_t earned = score_ten_thousands(digits) - ten_thousands_before; earned != 0; earned--) {
         if (game->reserves < MAX_RESERVES) {
             game->reserves++;
+            sound_play(SOUND_EXTRA_LIFE);
         }
+    }
+}
+
+/* Sails the surface from PATROL_FIRST_WAVE on, alternating sides between passes. */
+static void update_patrol(Patrol *patrol, uint8_t wave) {
+    if (!patrol->active) {
+        if (wave < PATROL_FIRST_WAVE || --patrol->timer != 0) {
+            return;
+        }
+        patrol->active = 1;
+        patrol->moving_left = !patrol->moving_left;
+        patrol->fixed_x = pixel_to_fixed(patrol->moving_left ? SCREEN_PX_WIDTH : -ENTITY_WIDTH);
+    }
+    patrol->fixed_x += patrol->moving_left ? -PATROL_SPEED : PATROL_SPEED;
+    patrol->x = fixed_to_pixel(patrol->fixed_x);
+    if (has_crossed_screen(patrol->x, patrol->moving_left)) {
+        patrol->active = 0;
+        patrol->timer = PATROL_DELAY_MIN + (rand() & PATROL_DELAY_RANDOM_MASK);
     }
 }
 
@@ -439,6 +487,7 @@ static void start_dying(GameState *game) {
     game->player.state_timer = DEATH_FRAMES;
     game->player_torpedo.active = 0;
     game->divers = 0;
+    sound_play(SOUND_PLAYER_EXPLOSION);
 }
 
 /* Once the explosion ends: lose a reserve and restart the round, or end the game. */
@@ -448,6 +497,7 @@ static void update_dying(GameState *game) {
     }
     if (game->reserves == 0) {
         game->game_over = 1;
+        game->banner = BANNER_GAME_OVER;
         return;
     }
     game->reserves--;
@@ -472,16 +522,44 @@ static void surface(GameState *game) {
         return;
     }
     if (game->divers == MAX_DIVERS_ON_BOARD) {
-        /* Full load: everyone is dropped off, the ocean clears and the next wave starts. */
-        add_score(game, MAX_DIVERS_ON_BOARD * diver_points(game->wave));
-        game->divers = 0;
-        game->wave++;
+        /* Full load: the ocean clears and the points are counted (update_tally). */
         reset_lanes(game);
-    } else {
-        /* Coming up early costs one rescued diver. */
-        game->divers--;
+        game->player.state = PLAYER_TALLYING;
+        game->player.state_timer = TALLY_DIVER_FRAMES;
+        return;
     }
+    /* Coming up early costs one rescued diver. */
+    game->divers--;
     game->player.state = PLAYER_REFILLING;
+}
+
+/*
+ * Counts a full load on screen: each diver leaves the HUD for its points,
+ * then the remaining oxygen drains into bonus points. Diver values use the
+ * wave being finished; the next wave starts as the tank refills.
+ */
+static void update_tally(GameState *game) {
+    Player *player = &game->player;
+
+    if (game->divers != 0) {
+        if (--player->state_timer == 0) {
+            player->state_timer = TALLY_DIVER_FRAMES;
+            game->divers--;
+            add_score(game, diver_points(game->wave));
+            sound_play(SOUND_TALLY);
+        }
+        return;
+    }
+    if (game->oxygen != 0) {
+        game->oxygen--;
+        add_score(game, OXYGEN_BONUS_PER_UNIT);
+        if (game->oxygen % (uint8_t)TALLY_TICK_UNITS == 0) {
+            sound_play(SOUND_TALLY);
+        }
+        return;
+    }
+    game->wave++;
+    player->state = PLAYER_REFILLING;
 }
 
 static void update_surfacing(GameState *game) {
@@ -497,7 +575,14 @@ static void update_surfacing(GameState *game) {
 
 /* Drains only while submerged; the tank runs dry -> the sub is lost. */
 static void update_oxygen(GameState *game) {
-    if (!game->player.submerged || --game->oxygen_drain_timer != 0) {
+    if (!game->player.submerged) {
+        return;
+    }
+    /* Beep each time the low-oxygen bar blinks back on. */
+    if (game->oxygen <= OXYGEN_LOW && game->frame % (uint8_t)(2 * OXYGEN_ALARM_BLINK_FRAMES) == 0) {
+        sound_play(SOUND_OXYGEN_ALARM);
+    }
+    if (--game->oxygen_drain_timer != 0) {
         return;
     }
     game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
@@ -510,6 +595,7 @@ void game_update(GameState *game, const InputState *input) {
     SpawnBudget budget;
     Player *player = &game->player;
     int16_t player_x;
+    uint8_t divers_before;
 
     game->frame++;
     if (player->state == PLAYER_DYING) {
@@ -518,6 +604,8 @@ void game_update(GameState *game, const InputState *input) {
     }
     if (player->state == PLAYER_REFILLING) {
         update_refill(game);
+    } else if (player->state == PLAYER_TALLYING) {
+        update_tally(game);
     } else {
         update_player(player, input);
         fire_player_torpedo(&game->player_torpedo, player, input);
@@ -529,11 +617,17 @@ void game_update(GameState *game, const InputState *input) {
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         update_lane(&game->lanes[i], game->frame, game->wave, player_x, &budget);
     }
+    update_patrol(&game->patrol, game->wave);
 
+    divers_before = game->divers;
     collisions_update(game);
+    if (game->divers > divers_before) {
+        sound_play(SOUND_RESCUE);
+    }
     if (game->enemies_destroyed != 0) {
         add_score(game, game->enemies_destroyed * enemy_points(game->wave));
         game->enemies_destroyed = 0;
+        sound_play(SOUND_ENEMY_EXPLOSION);
     }
     if (game->player_hit) {
         start_dying(game);
@@ -577,14 +671,18 @@ static uint8_t is_oxygen_alarm_off_phase(const GameState *game) {
         && (game->frame / (uint8_t)OXYGEN_ALARM_BLINK_FRAMES) & 1;
 }
 
-static void draw_game_over_banner(void) {
+static void draw_banner(Banner banner) {
+    if (banner == BANNER_NONE) {
+        fill_bkg_rect(0, BANNER_FIRST_ROW, SCREEN_TILES_WIDE, BANNER_ROWS, BG_TILE_WATER);
+        return;
+    }
     fill_bkg_rect(0, BANNER_FIRST_ROW, SCREEN_TILES_WIDE, BANNER_ROWS, BG_TILE_HUD);
-    draw_centered_text(BANNER_TITLE_ROW, "GAME OVER", 9);
+    if (banner == BANNER_TITLE) {
+        draw_centered_text(BANNER_TITLE_ROW, "SEAQUEST", 8);
+    } else {
+        draw_centered_text(BANNER_TITLE_ROW, "GAME OVER", 9);
+    }
     draw_centered_text(BANNER_HINT_ROW, "PRESS START", 11);
-}
-
-static void clear_game_over_banner(void) {
-    fill_bkg_rect(0, BANNER_FIRST_ROW, SCREEN_TILES_WIDE, BANNER_ROWS, BG_TILE_WATER);
 }
 
 static void render_hud(GameState *game) {
@@ -614,13 +712,9 @@ static void render_hud(GameState *game) {
         draw_icon_counter(DIVERS_COLUMN, ROW_DIVERS, game->divers, MAX_DIVERS_ON_BOARD,
                           BG_TILE_DIVER, BG_TILE_HUD);
     }
-    if (hud->game_over != game->game_over) {
-        hud->game_over = game->game_over;
-        if (game->game_over) {
-            draw_game_over_banner();
-        } else {
-            clear_game_over_banner();
-        }
+    if (hud->banner != game->banner) {
+        hud->banner = game->banner;
+        draw_banner(game->banner);
     }
 }
 
@@ -721,8 +815,8 @@ void game_render(GameState *game) {
     /* First, while still in VBlank (see game.h). */
     render_hud(game);
 
-    /* Sprites would draw over the GAME OVER banner. */
-    if (game->game_over) {
+    /* Sprites would draw over the banner text. */
+    if (game->banner != BANNER_NONE) {
         hide_sprites_range(0, MAX_HARDWARE_SPRITES);
         return;
     }
@@ -738,6 +832,10 @@ void game_render(GameState *game) {
                                      next_sprite);
     }
     next_sprite += render_torpedo(&game->player_torpedo, next_sprite);
+    if (game->patrol.active) {
+        next_sprite += render_entity(SPRITE_TILE_ENEMY_SUB, game->patrol.x, PATROL_Y,
+                                     game->patrol.moving_left, next_sprite);
+    }
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
         next_sprite += render_lane(&game->lanes[i], next_sprite);
     }
