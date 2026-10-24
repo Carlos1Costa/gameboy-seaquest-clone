@@ -10,6 +10,7 @@
 enum ScreenLayout {
     SCREEN_TILES_WIDE   = 20,
     SCREEN_TILES_HIGH   = 18,
+    SCREEN_PX_WIDTH     = SCREEN_TILES_WIDE * 8,
 
     ROW_SCORE           = 0,
     ROW_LIVES           = 1,
@@ -38,12 +39,21 @@ enum PlayerTuning {
     PLAYER_SPEED  = 1,                        /* pixels per frame */
 
     PLAYER_MIN_X  = 0,
-    PLAYER_MAX_X  = 160 - PLAYER_WIDTH,
+    PLAYER_MAX_X  = SCREEN_PX_WIDTH - PLAYER_WIDTH,
     PLAYER_MIN_Y  = ROW_SURFACE * 8 + 2,      /* hull just under the waterline */
     PLAYER_MAX_Y  = ROW_SEABED * 8 - PLAYER_HEIGHT,
 
-    PLAYER_START_X = (160 - PLAYER_WIDTH) / 2,
+    PLAYER_START_X = (SCREEN_PX_WIDTH - PLAYER_WIDTH) / 2,
     PLAYER_START_Y = PLAYER_MIN_Y
+};
+
+/*
+ * Torpedo tuning. The sprite is 8x8 but the visible body is a 7x2 line on
+ * rows 3-4, which lines up with the sub's hull when both share the same y.
+ */
+enum TorpedoTuning {
+    TORPEDO_WIDTH        = 8,
+    PLAYER_TORPEDO_SPEED = 4                  /* pixels per frame */
 };
 
 /* Game rules tuning (see GUIA_SEAQUEST_GB.md, sections 3.5-3.7). */
@@ -68,6 +78,13 @@ typedef struct {
     uint8_t facing_left;
 } Player;
 
+typedef struct {
+    int16_t x;         /* signed: a torpedo can be partly off the left edge */
+    uint8_t y;
+    uint8_t active;
+    uint8_t moving_left;
+} Torpedo;
+
 /* What the HUD currently shows, so render only touches VRAM on changes. */
 typedef struct {
     uint32_t score;
@@ -78,6 +95,7 @@ typedef struct {
 
 typedef struct {
     Player player;
+    Torpedo player_torpedo;   /* only one player torpedo on screen at a time */
     uint32_t score;
     uint8_t oxygen;
     uint8_t oxygen_drain_timer;

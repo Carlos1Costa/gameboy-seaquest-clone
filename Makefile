@@ -28,7 +28,7 @@ ROMFLAGS = -Wm-yn"SEAQUEST"
 
 # Sprite PNGs become metasprites (8x8 hardware sprites); tileset PNGs become
 # raw tile strips whose tile order matches the image left to right.
-SPRITE_PNGS  = res/player_sub.png
+SPRITE_PNGS  = res/player_sub.png res/torpedo.png
 TILESET_PNGS = res/hud_tiles.png
 
 ASSET_SOURCES = $(patsubst res/%.png,$(ASSETDIR)/%.c,$(SPRITE_PNGS) $(TILESET_PNGS))

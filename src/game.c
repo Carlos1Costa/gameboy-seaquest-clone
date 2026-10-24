@@ -3,11 +3,13 @@
 
 #include "game.h"
 #include "player_sub.h"
+#include "torpedo.h"
 #include "hud_tiles.h"
 
 /* First VRAM tile of each sprite sheet. */
 enum SpriteTile {
-    SPRITE_TILE_PLAYER_SUB = 0
+    SPRITE_TILE_PLAYER_SUB = 0,
+    SPRITE_TILE_TORPEDO    = SPRITE_TILE_PLAYER_SUB + player_sub_TILE_COUNT
 };
 
 /*
@@ -26,11 +28,6 @@ enum BackgroundTile {
     BG_TILE_LIFE      = 7,
     BG_TILE_DIGIT_0   = 8,
     BG_TILE_LETTER_O  = 18
-};
-
-/* Placeholder until EPIC B1.3 turns A into the torpedo button. */
-enum DebugTuning {
-    DEBUG_SCORE_PER_PRESS = 20
 };
 
 static void draw_static_background(void) {
@@ -55,12 +52,14 @@ static void reset_hud_cache(HudCache *hud) {
 
 void game_init(GameState *game) {
     set_sprite_data(SPRITE_TILE_PLAYER_SUB, player_sub_TILE_COUNT, player_sub_tiles);
+    set_sprite_data(SPRITE_TILE_TORPEDO, torpedo_TILE_COUNT, torpedo_tiles);
     set_bkg_data(0, hud_tiles_TILE_COUNT, hud_tiles_tiles);
     draw_static_background();
 
     game->player.x = PLAYER_START_X;
     game->player.y = PLAYER_START_Y;
     game->player.facing_left = 0;
+    game->player_torpedo.active = 0;
 
     game->score = 0;
     game->oxygen = OXYGEN_MAX;
@@ -95,6 +94,36 @@ static void update_player(Player *player, const InputState *input) {
     }
 }
 
+/* Holding A refires as soon as the previous torpedo is gone. */
+static void fire_player_torpedo(Torpedo *torpedo, const Player *player, const InputState *input) {
+    if (torpedo->active || !(input->held & J_A)) {
+        return;
+    }
+    torpedo->active = 1;
+    torpedo->moving_left = player->facing_left;
+    torpedo->y = player->y;
+    /* Launch from the sub's nose, just outside its hull. */
+    if (player->facing_left) {
+        torpedo->x = (int16_t)player->x - TORPEDO_WIDTH;
+    } else {
+        torpedo->x = (int16_t)player->x + PLAYER_WIDTH;
+    }
+}
+
+static void update_torpedo(Torpedo *torpedo, uint8_t speed) {
+    if (!torpedo->active) {
+        return;
+    }
+    if (torpedo->moving_left) {
+        torpedo->x -= speed;
+    } else {
+        torpedo->x += speed;
+    }
+    if (torpedo->x <= -TORPEDO_WIDTH || torpedo->x >= SCREEN_PX_WIDTH) {
+        torpedo->active = 0;
+    }
+}
+
 /* Placeholder drain that wraps around; real oxygen rules come in EPIC D. */
 static void update_oxygen(GameState *game) {
     game->oxygen_drain_timer--;
@@ -107,11 +136,9 @@ static void update_oxygen(GameState *game) {
 
 void game_update(GameState *game, const InputState *input) {
     update_player(&game->player, input);
+    update_torpedo(&game->player_torpedo, PLAYER_TORPEDO_SPEED);
+    fire_player_torpedo(&game->player_torpedo, &game->player, input);
     update_oxygen(game);
-
-    if (input->pressed & J_A) {
-        game->score += DEBUG_SCORE_PER_PRESS;
-    }
 }
 
 static void draw_score(uint32_t score) {
@@ -180,10 +207,28 @@ static uint8_t render_player(const Player *player, uint8_t first_sprite) {
                               first_sprite, oam_x, oam_y);
 }
 
+/* Returns how many hardware sprites were used. */
+static uint8_t render_torpedo(const Torpedo *torpedo, uint8_t first_sprite) {
+    if (!torpedo->active) {
+        return 0;
+    }
+    /* x >= -TORPEDO_WIDTH here, so the OAM x never wraps and the hardware clips the left edge. */
+    uint8_t oam_x = (uint8_t)(torpedo->x + torpedo_PIVOT_X + DEVICE_SPRITE_PX_OFFSET_X);
+    uint8_t oam_y = torpedo->y + torpedo_PIVOT_Y + DEVICE_SPRITE_PX_OFFSET_Y;
+
+    if (torpedo->moving_left) {
+        return move_metasprite_flipx(torpedo_metasprites[0], SPRITE_TILE_TORPEDO, 0,
+                                     first_sprite, oam_x, oam_y);
+    }
+    return move_metasprite_ex(torpedo_metasprites[0], SPRITE_TILE_TORPEDO, 0,
+                              first_sprite, oam_x, oam_y);
+}
+
 void game_render(GameState *game) {
     uint8_t next_sprite = 0;
 
     next_sprite += render_player(&game->player, next_sprite);
+    next_sprite += render_torpedo(&game->player_torpedo, next_sprite);
     hide_sprites_range(next_sprite, MAX_HARDWARE_SPRITES);
 
     render_hud(game);
