@@ -51,7 +51,9 @@ Alvo: **Game Boy original (DMG)** — 4 tons de cinza. (Portar para GBC pode vir
 No Game Boy, **só 10 sprites podem ser desenhados na mesma linha horizontal**; o 11º some. Como no Seaquest os inimigos vêm em **fileiras horizontais**, dois ou mais inimigos na mesma altura Y podem estourar o limite junto com o sub e divers.
 - **Mitigação:** limitar o número de entidades ativas por "faixa" (row) vertical. Projetar o spawner para distribuir inimigos entre as fileiras.
 - **Orçamento inicial sugerido:** 1 sub do player (2 hardware sprites, metasprite 16×8) + torpedo (1), ~4–6 inimigos, até 4 divers, 1–2 torpedos, 1 patrol sub. Monitorar.
-- **Conta por scanline:** cada entidade 16×8 ocupa **2 sprites** na linha em que está. Ex.: sub do player (2) + torpedo (1) + 3 entidades na mesma fileira (6) = 9 — cabe nos 10, com pouca folga. O spawner deve garantir **no máx. 3 entidades 16×8 por fileira**.
+- **Conta por scanline:** cada entidade 16×8 ocupa **2 sprites** na linha em que está. Pior caso: 3 entidades da fileira (6) + torpedo inimigo da fileira (1) + sub do player (2) + torpedo do player (1) = **10** — exatamente o limite. Por isso o spawner garante **no máx. 3 entidades 16×8 por fileira** (inimigos + diver) e **1 torpedo inimigo por fileira**.
+- **Modelo de fileiras (implementado no EPIC C):** 4 fileiras fixas na água, espaçadas 22 px. Cada fileira recebe um *grupo*: 1–3 inimigos do mesmo tipo (sharks **ou** enemy subs), mesma direção, entrando juntos pelo mesmo lado, mais um diver opcional no fim da fila (com diver, o grupo tem no máx. 2 inimigos). Uma fileira só recebe novo grupo depois de esvaziar. O espaçamento garante que um shark oscilando (±4 px) nunca invade a fileira vizinha, então as fileiras não somam sprites entre si.
+- **Prioridade:** o player é desenhado nos primeiros slots de OAM; se algum dia uma linha estourar, quem some é um inimigo, nunca o sub.
 - **Por que 8×8 e não 8×16:** o modo 8×16 gera sprites altos e estreitos (8 px de largura); sub, tubarões e divers são largos e baixos, então 16×8 (dois 8×8 lado a lado) representa melhor as formas sem desperdiçar tiles.
 
 ---
@@ -174,7 +176,7 @@ Epic → Milestone (entregável testável) → Task (unidade implementável) →
 
 ### EPIC E — Colisões, score e ciclo de vida
 **Milestone E1: "It's a game"**
-- Task E1.1: Sistema de colisão AABB central (torpedo↔inimigo, player↔inimigo, player↔diver, torpedo-inimigo↔player). *AC: colisões consistentes; sem falsos positivos.*
+- Task E1.1 *(antecipada e feita no EPIC C, pois os ACs de C1.3/C1.4 dependem dela)*: Sistema de colisão AABB central (torpedo↔inimigo, player↔inimigo, player↔diver, torpedo-inimigo↔player). *AC: colisões consistentes; sem falsos positivos.*
 - Task E1.2: Scoring (inimigos 20→90, divers 50→1000, escalonando por wave). *AC: valores batem com a tabela.*
 - Task E1.3: Vidas, reserva, extra life a cada 10k, game over. *AC: fluxo completo de morte→respawn→game over.*
 - Task E1.4: Avanço de wave (velocidade/valores sobem). *AC: dificuldade perceptível a cada wave.*
@@ -221,7 +223,8 @@ seaquest/
 
 **Padrões a seguir:**
 - Entidades: `struct` com `x, y, active, type/variant` e campos específicos. Arrays de tamanho fixo (orçamento conhecido).
-- **Posições fracionárias (ponto fixo 8.8):** entidades que se movem guardam `x`/`y` como `uint16_t` em ponto fixo 8.8 — o byte alto é o pixel na tela, o byte baixo é a fração (1/256 de pixel). Velocidades também são 8.8 (ex.: `0x0080` = 0,5 px/frame, `0x0180` = 1,5 px/frame). Isso permite acelerar inimigos em passos pequenos a cada wave sem saltos de 1 px/frame inteiro. O pixel é obtido com `>> 8` (barato no SM83: é só pegar o byte alto) e a conversão fica num `static inline` (ex.: `fixed_to_pixel()`), nunca em macro. Colisões AABB usam o pixel inteiro. Adotado a partir do EPIC C; o player (hoje em pixels inteiros, 1 px/frame) migra junto para manter um único modelo.
+- **Posições fracionárias (ponto fixo 12.4 com sinal):** posições que se movem são do tipo `Fixed` (`int16_t`): 12 bits de pixel + 4 bits de fração (1/16 de pixel), faixa de ±2048 px. Velocidades também são `Fixed` por frame (ex.: `FIXED_ONE` = 16 = 1 px/frame, `8` = 0,5 px/frame, `12` = 0,75 px/frame). Isso permite acelerar inimigos em passos pequenos a cada wave sem saltos de 1 px/frame inteiro. A conversão é feita por `fixed_to_pixel()` / `pixel_to_fixed()` (`static inline`, nunca macro). Colisões AABB e render usam o pixel inteiro.
+  - **Por que 12.4 com sinal e não 8.8:** inimigos nascem **fora da tela** (x negativo à esquerda, x ≥ 160 à direita, com o grupo enfileirado atrás). 8.8 sem sinal não representa x negativo, e 8.8 com sinal só cobre ±128 px, menos que a largura da tela. 1/16 px de precisão é mais que suficiente para a escalada de velocidade; o custo de `>> 4` é desprezível.
 - Estado global do jogo numa única `struct GameState` passada por ponteiro (sem globais soltas espalhadas).
 - Constantes de tuning (velocidades, valores de score, taxa de O₂) agrupadas como `const`/`enum` no topo de `game.h`, bem comentadas — fáceis de ajustar no playtest.
 - Loop: `input → update → render → vsync()` (`vsync()` é o nome atual de `wait_vbl_done()` no GBDK-2020). Sem lógica no meio do render.

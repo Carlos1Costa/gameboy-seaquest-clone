@@ -30,6 +30,6 @@ Art lives in `res/*.png` and is converted by `png2asset` (bundled with GBDK) int
 
 ## Layout
 
-    src/    game code (main.c, game.c, game.h)
+    src/    game code (main.c, game.c/.h, collision.c/.h)
     res/    source PNGs
     hello/  toolchain smoke test (`make hello`), to be removed after the MVP
