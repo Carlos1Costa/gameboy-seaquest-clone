@@ -87,3 +87,49 @@ def test_extra_life(game):
     shoot_target(game)
     assert game.k.EXTRA_LIFE_SOUND in game.sounds
     assert game.reserves == game.k.STARTING_RESERVES + 1
+
+
+def test_extra_life_sound_is_long_enough_to_hear(game):
+    """A fast upward sweep overflows and the hardware cuts the channel within ms."""
+    game.score = 9990
+    y = game.lane(1).base_y
+    game.place_group(1, 60)
+    game.place_player_torpedo(44, y)
+    assert game.tick_until(lambda: game.k.EXTRA_LIFE_SOUND in game.sounds, 10)
+    game.tick(6)                    # 100 ms
+    assert game.channels_playing() & 0x01
+
+
+def refill_after_surfacing(game):
+    game.divers = 1
+    game.oxygen = 8
+    game.rise()
+    assert game.state == game.k.REFILLING
+    game.tick_until(lambda: game.state != game.k.REFILLING, 200)
+
+
+def test_refill_ticks_once_per_bar_tile_with_rising_pitch(game):
+    k = game.k
+    refill_after_surfacing(game)
+    levels = game.refill_levels
+    assert levels == sorted(levels) and len(set(levels)) == len(levels)
+    assert all(level % k.OXYGEN_REFILL_TICK_UNITS == 0 for level in levels)
+    assert levels[-1] == k.OXYGEN_MAX
+    assert len(levels) >= k.OXYGEN_BAR_TILES - 2
+
+
+def test_refill_sound_stops_when_the_tank_is_full(game):
+    refill_after_surfacing(game)
+    ticks = len(game.refill_levels)
+    game.tick(60)
+    assert len(game.refill_levels) == ticks
+
+
+def test_no_refill_sound_under_water(game):
+    game.tick(60)
+    assert game.refill_levels == []
+
+
+def test_refill_sound_is_not_the_tally_sound(game):
+    refill_after_surfacing(game)
+    assert game.k.TALLY_SOUND not in game.sounds

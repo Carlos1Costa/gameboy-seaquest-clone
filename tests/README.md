@@ -32,8 +32,9 @@ To run part of the suite, or see why a test failed:
 | `test_oxygen.py` | Drain, refill, alarm, surfacing rules, deaths (EPIC D) |
 | `test_scoring.py` | Points, extra lives, on-screen count, difficulty (EPICs E, F1.2) |
 | `test_patrol.py` | Patrol sub (F1.1) |
-| `test_sound.py` | Which effect each event requests (F1.3) |
+| `test_sound.py` | Which effect each event requests, refill ticks (F1.3, EPIC H) |
 | `test_performance.py` | The 60 fps budget and the sprite limit (GUIA section 6.1) |
+| `test_animation.py` | Sprite frames, cadence, mirroring, explosion (EPIC G) |
 | `test_art.py` | PNG format in `res/`, and the safety of `tools/make_art.py` |
 
 The other files are infrastructure:
@@ -78,6 +79,8 @@ Rules that keep the suite useful:
   by watching random play passes whenever the game never reaches the cap.
 - **Avoid depending on the exact frame** when reading something that changes by itself.
   Prefer `game.tick_until(condition, limit)` over a fixed number of ticks.
+- **Find sprites by sheet, not by tile number.** `game.sprites_of("shark")` keeps working
+  when frames are added, because tile numbers come from the PNG widths.
 - **Sprites appear one frame after they are computed** (the loop renders after `vsync()`,
   and OAM is copied at the next VBlank). Tick a frame or two before reading `sprites()`.
 - **Check that a new test can fail.** Break the code on purpose once and watch it go red.

@@ -1,7 +1,7 @@
 """EPICs A and B: movement at 60 fps, screen limits, orientation, player torpedo."""
 import pytest
 
-from harness import S_FLIPX, SPRITE_TILE_PLAYER
+from harness import S_FLIPX, SPRITE_TILES
 
 
 def test_moves_one_pixel_per_frame_in_every_direction(diving):
@@ -35,20 +35,16 @@ def test_stops_at_the_screen_limits(diving, button, axis, limit):
 
 
 def test_sprite_mirrors_when_facing_left(game):
-    def player_tiles():
-        tiles = [s for s in game.sprites() if s.tile in (SPRITE_TILE_PLAYER, SPRITE_TILE_PLAYER + 1)]
-        return sorted(tiles, key=lambda s: s.x)
-
     game.tick(2)
-    left, right = player_tiles()
-    assert (left.tile, right.tile) == (SPRITE_TILE_PLAYER, SPRITE_TILE_PLAYER + 1)
+    left, right = game.sprites_of("player_sub")
+    assert left.tile % 2 == 0 and right.tile == left.tile + 1    # left tile of a frame, then right
     assert not left.flags & S_FLIPX
 
     game.hold("left", 3)
     game.tick(2)
-    left, right = player_tiles()
+    left, right = game.sprites_of("player_sub")
     assert game.facing_left
-    assert (left.tile, right.tile) == (SPRITE_TILE_PLAYER + 1, SPRITE_TILE_PLAYER)
+    assert left.tile % 2 == 1 and left.tile == right.tile + 1    # mirrored: swapped and flipped
     assert left.flags & right.flags & S_FLIPX
 
 
@@ -99,8 +95,7 @@ def test_only_one_torpedo_at_a_time_and_holding_a_refires(diving):
     for _ in range(120):
         game.tick()
         active, x, _ = game.player_torpedo()
-        torpedo_sprites = [s for s in game.sprites() if s.tile == 2]
-        assert len(torpedo_sprites) <= 1
+        assert len(game.sprites_of("torpedo")) <= 1
         if active and x < previous_x:
             launches += 1
         previous_x = x

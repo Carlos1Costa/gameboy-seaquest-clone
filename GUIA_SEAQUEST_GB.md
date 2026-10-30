@@ -146,6 +146,16 @@ O jogador pilota um submarino para **resgatar mergulhadores (divers)** no fundo 
 - **Efeitos sonoros** (`sound.c`): tiro, explosão de inimigo, explosão do sub, resgate, alarme de O₂ (bipe a cada piscada da barra), tique da contagem e vida extra. Cada efeito é uma escrita nos registradores do APU; o hardware cuida do envelope e da varredura, então não há custo por frame.
 - **Telas:** `main.c` tem a máquina de estados **título → jogo → game over → título**, tudo com START. As telas são faixas de texto sobre o oceano congelado, sem sprites. A semente aleatória vem do tempo que o jogador passa no título (mais o registrador DIV), então cada partida é diferente.
 
+### 3.10. Refinamento de arte e som (EPICs G e H)
+Spec em [REFINAMENTO_ARTE_SOM_SEAQUEST_GB.md](REFINAMENTO_ARTE_SOM_SEAQUEST_GB.md).
+- **Animação:** flipbook de tiles. Cada PNG guarda seus frames lado a lado e o render soma o deslocamento do frame atual (`anim_tile_offset`). É só cosmética: colisão, spawn e regras não leem o frame.
+- **Cadência em potências de 2** (`ANIM_PERIOD_*`: hélice 4 frames, tubarão e diver 8), diferente dos 6/10/12 sugeridos na spec: a pose vira um bit do relógio, sem divisão por frame (seção 6.1). Membros de um grupo animam em fase.
+- **O relógio `game->frame` para durante a explosão,** junto com o mundo, para os inimigos congelados não seguirem animando.
+- **Arte:** herói claro com vigia e cauda trabalhada, inimigo escuro e liso (o patrol herda), tubarão com boca e cauda animadas, diver inclinado com a cabeça erguida, chute e bolhas. Explosão em 3 frames (faísca, estouro, nuvem) ao longo de `DEATH_FRAMES`, mantendo o pisca.
+- **HUD:** o texto é `OXYGEN`, nas colunas 1–6, e a barra foi para as colunas 7–18. A barra **manteve os 12 tiles**: reduzi-la encolheria `OXYGEN_MAX`, mudando a duração do tanque (~16 s) e o bônus.
+- **Som de reabastecimento:** `sound_play_oxygen_refill(oxygen)`, um tique a cada tile da barra, com pitch subindo de ~260 Hz a ~1 kHz, duty 12,5% e pulse 2. É uma função à parte porque é o único efeito que recebe um valor. A versão contínua (H1.2) segue opcional.
+- **Vida extra:** a varredura foi corrigida, porque estourava o registrador e cortava o som em ~40 ms; agora dura ~150 ms.
+
 ## 4. Escopo do MVP vs. versões futuras
 
 Para não afogar o projeto (trocadilho intencional 🌊), fatiamos em entregas jogáveis.
@@ -216,6 +226,9 @@ Epic → Milestone (entregável testável) → Task (unidade implementável) →
 - Task F1.3: SFX (tiro, explosão, resgate, alarme O₂). *AC: cada evento tem som; sem travar o loop.*
 - Task F1.4: Telas de título e game over. *AC: navegáveis com START.*
 
+### EPIC G — Arte e animação / EPIC H — Áudio
+Refinamento pós-MVP, descrito em [REFINAMENTO_ARTE_SOM_SEAQUEST_GB.md](REFINAMENTO_ARTE_SOM_SEAQUEST_GB.md) e registrado na seção 3.10. Pendente: H1.2 (refil contínuo), se o playtest pedir.
+
 ---
 
 ## 6. Arquitetura de código proposta (enxuta)
@@ -241,7 +254,7 @@ seaquest/
 
 **Pipeline de assets (png2asset):**
 - Os `.c/.h` de assets **não são versionados**: o `Makefile` roda o `png2asset` (que vem no GBDK) sobre cada PNG de `res/` e gera em `build/assets/`. Para adicionar um asset, inclua o PNG na lista `SPRITE_PNGS` ou `TILESET_PNGS` do `Makefile`.
-- **Sprites** (`SPRITE_PNGS`): convertidos só como tiles (`-spr8x8 -sprite_no_optimize -tiles_only`), da esquerda para a direita: uma entidade 16×8 vira exatamente 2 tiles (esquerdo, direito) e o torpedo 1 tile. `-sprite_no_optimize` impede que tiles repetidos/vazios sejam removidos, então a ordem é garantida (há `_Static_assert` no código conferindo a contagem). O render escreve direto na shadow OAM — a rotina genérica de metasprites do GBDK custava caro demais. O espelhamento esquerda/direita é feito em runtime (flag `S_FLIPX` + troca da ordem dos 2 tiles), então desenhamos só a versão virada para a direita.
+- **Sprites** (`SPRITE_PNGS`): convertidos só como tiles (`-spr8x8 -sprite_no_optimize -tiles_only`), da esquerda para a direita: cada frame de uma entidade 16×8 são exatamente 2 tiles (esquerdo, direito), com os frames lado a lado no PNG (`[f0_L, f0_R, f1_L, f1_R, ...]`), e o torpedo é 1 tile. `-sprite_no_optimize` impede que tiles repetidos/vazios sejam removidos, então a ordem é garantida (há `_Static_assert` no código conferindo a contagem). O render escreve direto na shadow OAM — a rotina genérica de metasprites do GBDK custava caro demais. O espelhamento esquerda/direita é feito em runtime (flag `S_FLIPX` + troca da ordem dos 2 tiles), então desenhamos só a versão virada para a direita.
 - **Tilesets** (`TILESET_PNGS`): faixa horizontal de tiles 8×8 exportada sem deduplicação; a ordem dos tiles da esquerda para a direita **é** o índice na VRAM e precisa bater com o `enum` correspondente em `game.c`.
 - **Arte placeholder:** os PNGs atuais de `res/` são gerados por `tools/make_art.py`, onde a arte está escrita como texto. Ele roda só por `make art`, nunca no build, e recria apenas o que falta. Se um PNG diferir do placeholder (arte final, por exemplo), o script não grava nada e avisa; `make art FORCE=1` substitui mesmo assim. Tile novo no tileset exige atualizar `tools/make_art.py`, `BackgroundTile`/`letter_glyphs` em `game.c` e `tests/harness.py`.
 - **Formato dos PNGs:** indexado com 4 cores na ordem branco, cinza claro, cinza escuro, preto (índices 0–3). Em sprites, o índice 0 é transparente. Tiles de HUD usam cinza claro (índice 1) como fundo, que é a cor das faixas de HUD.
@@ -266,7 +279,7 @@ seaquest/
 O orçamento é de **154 scanlines por frame** (70.224 ciclos de clock; ~17.500 ciclos de máquina). Em C com SDCC, cada comando simples custa da ordem de 40 ciclos de máquina, porque a CPU tem poucos registradores e as variáveis vivem na pilha. Regras que saíram das medições (e que devemos seguir daqui em diante):
 
 - **`tests/test_performance.py` falha se o orçamento estourar**, e `make test` imprime o pior frame de cada cenário. Para investigar, `make profile` mostra o custo por função e por linha de C.
-- **Medir sempre o pior caso**, não a média. Meta: pior frame real ≤ ~85–90% do orçamento, deixando folga para os próximos epics. Estado após a otimização: pior frame observado em jogo ~138/154 scanlines; cena vazia ~55.
+- **Medir sempre o pior caso**, não a média. Meta: pior frame real ≤ ~85–90% do orçamento, deixando folga para os próximos epics. Estado atual: pior frame observado em jogo ~141/154 scanlines; cena vazia ~67.
 - **Não percorrer slots vazios.** Loops sobre arrays com flag `active` custavam caro mesmo sem nada ativo; preferir máscaras de bits que terminam após o último elemento vivo (ver `Lane.alive_mask`).
 - **Evitar comparações de 16 bits com sinal** em caminhos quentes: a CPU não tem flags de sinal e cada uma vira ~20 instruções. Usar `is_in_range()` (uma comparação sem sinal) ou testes de sinal (`x < 0`).
 - **Colisões em 8 bits** (espaço de colisão deslocado +16 px) e com *broad phase* por fileira: um teste de y descarta fileiras inteiras.

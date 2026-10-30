@@ -1,6 +1,8 @@
 """EPIC D: oxygen, refilling, surfacing rules, deaths."""
 import pytest
 
+from harness import text_tiles
+
 
 def test_life_starts_frozen_at_the_surface_refilling(title):
     title.start()
@@ -28,6 +30,17 @@ def test_refill_ends_with_a_full_tank_and_returns_control(game):
     assert game.oxygen == game.k.OXYGEN_MAX
     game.tick(2)
     assert game.hud_oxygen_tiles() == game.k.OXYGEN_BAR_TILES
+
+
+def test_hud_label_says_oxygen(game):
+    k = game.k
+    row = game.bg_row(k.ROW_OXYGEN)
+    assert row[k.OXYGEN_LABEL_COLUMN:k.OXYGEN_LABEL_COLUMN + 6] == text_tiles("OXYGEN")
+
+
+def test_label_and_bar_fit_side_by_side(k):
+    assert k.OXYGEN_LABEL_COLUMN + len("OXYGEN") <= k.OXYGEN_BAR_COLUMN
+    assert k.OXYGEN_BAR_COLUMN + k.OXYGEN_BAR_TILES <= k.SCREEN_WIDTH // 8
 
 
 def test_no_drain_at_the_surface(game):

@@ -1,5 +1,4 @@
 """F1.1: the patrol sub on the surface line."""
-from harness import SPRITE_TILE_ENEMY_SUB
 
 
 def wait_for_patrol(game):
@@ -21,8 +20,7 @@ def test_patrol_sails_the_surface_line(diving):
     wait_for_patrol(game)
     assert game.tick_until(lambda: 20 < game.patrol_x < 120, 300)
     game.tick(2)
-    on_surface = [s for s in game.sprites() if s.tile in (SPRITE_TILE_ENEMY_SUB, SPRITE_TILE_ENEMY_SUB + 1)]
-    assert {s.y for s in on_surface} == {game.k.PATROL_Y}
+    assert {s.y for s in game.sprites_of("enemy_sub")} == {game.k.PATROL_Y}
 
 
 def test_patrol_passes_alternate_sides(diving):

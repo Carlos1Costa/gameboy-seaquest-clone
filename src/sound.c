@@ -20,7 +20,12 @@ enum SoundRegisters {
     MASTER_VOLUME    = 0x77,   /* max on both outputs */
     ALL_CHANNELS_LR  = 0xFF,
     TRIGGER          = 0x80,
-    DUTY_50          = 0x80
+    DUTY_12_5        = 0x00,   /* thin, reedy tone: reads as a bubble */
+    DUTY_50          = 0x80,
+
+    REFILL_ENVELOPE    = 0x71,
+    REFILL_BASE_PERIOD = 0x600,   /* ~260 Hz with an empty tank... */
+    REFILL_PITCH_SHIFT = 2        /* ...up to ~1 kHz with a full one */
 };
 
 /* Pulse period (11 bits) split into the NRx3 low byte and NRx4 high bits. */
@@ -32,8 +37,8 @@ static void trigger_pulse1(uint8_t sweep, uint8_t envelope, uint16_t period) {
     NR14_REG = TRIGGER | (uint8_t)(period >> 8);
 }
 
-static void trigger_pulse2(uint8_t envelope, uint16_t period) {
-    NR21_REG = DUTY_50;
+static void trigger_pulse2(uint8_t duty, uint8_t envelope, uint16_t period) {
+    NR21_REG = duty;
     NR22_REG = envelope;
     NR23_REG = (uint8_t)period;
     NR24_REG = TRIGGER | (uint8_t)(period >> 8);
@@ -44,6 +49,10 @@ static void trigger_noise(uint8_t envelope, uint8_t polynomial) {
     NR42_REG = envelope;
     NR43_REG = polynomial;
     NR44_REG = TRIGGER;
+}
+
+void sound_play_oxygen_refill(uint8_t oxygen) {
+    trigger_pulse2(DUTY_12_5, REFILL_ENVELOPE, REFILL_BASE_PERIOD + ((uint16_t)oxygen << REFILL_PITCH_SHIFT));
 }
 
 void sound_init(void) {
@@ -66,17 +75,21 @@ void sound_play(SoundEffect effect) {
         trigger_noise(0xF5, 0x71);
         break;
     case SOUND_RESCUE:
-        trigger_pulse2(0x92, 0x7C1);   /* ~2 kHz blip */
+        trigger_pulse2(DUTY_50, 0x92, 0x7C1);   /* ~2 kHz blip */
         break;
     case SOUND_OXYGEN_ALARM:
-        trigger_pulse2(0x71, 0x6D6);   /* ~440 Hz beep */
+        trigger_pulse2(DUTY_50, 0x71, 0x6D6);   /* ~440 Hz beep */
         break;
     case SOUND_TALLY:
-        trigger_pulse2(0x51, 0x783);   /* soft, high tick */
+        trigger_pulse2(DUTY_50, 0x51, 0x783);   /* soft, high tick */
         break;
     case SOUND_EXTRA_LIFE:
-        /* Rising sweep from ~500 Hz. */
-        trigger_pulse1(0x24, 0xC3, 0x700);
+        /*
+         * Rising sweep from ~500 Hz. The shift sets how fast the period grows:
+         * past 2047 the hardware cuts the channel, so a low shift ends the
+         * sound within milliseconds. This one lasts ~150 ms.
+         */
+        trigger_pulse1(0x26, 0xC3, 0x700);
         break;
     }
 }

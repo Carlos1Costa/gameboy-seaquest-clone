@@ -23,8 +23,8 @@ enum ScreenLayout {
     SCORE_DIGITS        = 6,
     SCORE_COLUMN        = 7,   /* centered: (20 - 6) / 2 */
     LIVES_COLUMN        = 1,
-    OXYGEN_LABEL_COLUMN = 2,
-    OXYGEN_BAR_COLUMN   = 5,
+    OXYGEN_LABEL_COLUMN = 1,
+    OXYGEN_BAR_COLUMN   = 7,   /* right after the 6-letter label */
     OXYGEN_BAR_TILES    = 12,
     DIVERS_COLUMN       = 7
 };
@@ -146,6 +146,7 @@ enum RulesTuning {
     OXYGEN_REFILL_PER_FRAME   = 1,            /* empty to full in ~1.6 s */
     OXYGEN_LOW                = 2 * 8,        /* last 2 bar tiles: the bar blinks */
     OXYGEN_ALARM_BLINK_FRAMES = 8,            /* frames on, then frames off */
+    OXYGEN_REFILL_TICK_UNITS  = 8,            /* a sound per bar tile refilled; a power of 2 */
 
     DEATH_FRAMES              = 90,           /* explosion length, world frozen */
     EXPLOSION_BLINK_FRAMES    = 4
@@ -194,6 +195,24 @@ enum PatrolTuning {
 enum DifficultyTuning {
     ENEMY_SPEED_PER_WAVE = 2,                 /* +1/8 px/frame per wave */
     ENEMY_SPEED_MAX      = 2 * FIXED_ONE      /* 2 px/frame */
+};
+
+/*
+ * Sprite animation is a flipbook: a PNG holds its frames side by side, and
+ * rendering adds the current frame's tile offset. It is purely cosmetic, so
+ * only the render code reads this.
+ *
+ * Frames per pose must be powers of 2: the pose is a bit of the frame clock,
+ * while any other period would need a division per entity per frame.
+ */
+enum AnimationTuning {
+    ENTITY_TILES_PER_FRAME = 2,
+    ANIM_PERIOD_PROPELLER  = 4,
+    ANIM_PERIOD_SHARK      = 8,
+    ANIM_PERIOD_DIVER      = 8,
+
+    EXPLOSION_FRAMES       = 3,                        /* spark, burst, cloud */
+    EXPLOSION_FRAME_LENGTH = DEATH_FRAMES / EXPLOSION_FRAMES
 };
 
 /*
@@ -309,7 +328,7 @@ typedef struct {
     uint8_t enemies_destroyed; /* set by collisions this frame, scored by game.c */
     uint8_t game_over;        /* the last life is gone */
     Banner banner;
-    uint8_t frame;            /* wraps; drives animations like the shark wave */
+    uint8_t frame;            /* wraps; clock of the animations; stops with the world */
     /*
      * Decimal digits, most significant first. Extracting digits from a
      * uint32_t takes 32-bit divisions in software, which cost over a full

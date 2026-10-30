@@ -1,6 +1,8 @@
 #ifndef SOUND_H
 #define SOUND_H
 
+#include <stdint.h>
+
 /*
  * One-shot sound effects. Each one is a single write to the APU registers;
  * the hardware runs the envelope and pitch sweep on its own, so playing a
@@ -18,5 +20,12 @@ typedef enum {
 
 void sound_init(void);
 void sound_play(SoundEffect effect);
+/*
+ * A bubbly tick for one step of the tank refilling; the pitch rises with
+ * oxygen. Kept apart from sound_play because it is the only effect that takes
+ * a value. Refilling and the low-oxygen alarm never overlap, so they can share
+ * a channel.
+ */
+void sound_play_oxygen_refill(uint8_t oxygen);
 
 #endif

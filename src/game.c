@@ -41,7 +41,7 @@ enum BackgroundTile {
 };
 
 /* Letters with a glyph in res/hud_tiles.png, in tile order. */
-static const char letter_glyphs[] = "AEGMOPQRSTUV";
+static const char letter_glyphs[] = "AEGMNOPQRSTUVXY";
 
 /* Title / GAME OVER banner across the water, as a light band like the HUD. */
 enum BannerLayout {
@@ -93,7 +93,7 @@ static void draw_static_background(void) {
     fill_bkg_rect(0, ROW_WATER_FIRST, SCREEN_TILES_WIDE, water_rows, BG_TILE_WATER);
     fill_bkg_rect(0, ROW_SEABED, SCREEN_TILES_WIDE, 1, BG_TILE_SEABED);
     fill_bkg_rect(0, ROW_OXYGEN, SCREEN_TILES_WIDE, SCREEN_TILES_HIGH - ROW_OXYGEN, BG_TILE_HUD);
-    draw_text(OXYGEN_LABEL_COLUMN, ROW_OXYGEN, "O2");
+    draw_text(OXYGEN_LABEL_COLUMN, ROW_OXYGEN, "OXYGEN");
 }
 
 static void reset_hud_cache(HudCache *hud) {
@@ -507,6 +507,9 @@ static void update_dying(GameState *game) {
 
 static void update_refill(GameState *game) {
     game->oxygen += OXYGEN_REFILL_PER_FRAME;
+    if ((game->oxygen & (OXYGEN_REFILL_TICK_UNITS - 1)) == 0) {
+        sound_play_oxygen_refill(game->oxygen);
+    }
     if (game->oxygen >= OXYGEN_MAX) {
         game->oxygen = OXYGEN_MAX;
         game->oxygen_drain_timer = OXYGEN_DRAIN_FRAMES;
@@ -597,11 +600,12 @@ void game_update(GameState *game, const InputState *input) {
     int16_t player_x;
     uint8_t divers_before;
 
-    game->frame++;
+    /* The clock stops with the world: nothing animates during the explosion. */
     if (player->state == PLAYER_DYING) {
         update_dying(game);
         return;
     }
+    game->frame++;
     if (player->state == PLAYER_REFILLING) {
         update_refill(game);
     } else if (player->state == PLAYER_TALLYING) {
@@ -720,15 +724,35 @@ static void render_hud(GameState *game) {
 
 /*
  * Every sprite asset is a horizontal strip of 8x8 tiles: entities are 2 tiles
- * (left, right), torpedoes are 1. Writing those straight into the shadow OAM
- * is much cheaper than GBDK's generic metasprite routine.
+ * (left, right) per animation frame, torpedoes are 1. Writing those straight
+ * into the shadow OAM is much cheaper than GBDK's generic metasprite routine.
  */
-_Static_assert(player_sub_TILE_COUNT == 2, "player_sub.png must be 16x8");
-_Static_assert(shark_TILE_COUNT == 2, "shark.png must be 16x8");
-_Static_assert(enemy_sub_TILE_COUNT == 2, "enemy_sub.png must be 16x8");
-_Static_assert(diver_TILE_COUNT == 2, "diver.png must be 16x8");
-_Static_assert(explosion_TILE_COUNT == 2, "explosion.png must be 16x8");
+_Static_assert(player_sub_TILE_COUNT == 2 * ENTITY_TILES_PER_FRAME, "player_sub.png must be 2 frames");
+_Static_assert(shark_TILE_COUNT == 2 * ENTITY_TILES_PER_FRAME, "shark.png must be 2 frames");
+_Static_assert(enemy_sub_TILE_COUNT == 2 * ENTITY_TILES_PER_FRAME, "enemy_sub.png must be 2 frames");
+_Static_assert(diver_TILE_COUNT == 2 * ENTITY_TILES_PER_FRAME, "diver.png must be 2 frames");
+_Static_assert(explosion_TILE_COUNT == EXPLOSION_FRAMES * ENTITY_TILES_PER_FRAME,
+               "explosion.png must have EXPLOSION_FRAMES frames");
 _Static_assert(torpedo_TILE_COUNT == 1, "torpedo.png must be 8x8");
+_Static_assert((ANIM_PERIOD_PROPELLER & (ANIM_PERIOD_PROPELLER - 1)) == 0, "must be a power of 2");
+_Static_assert((ANIM_PERIOD_SHARK & (ANIM_PERIOD_SHARK - 1)) == 0, "must be a power of 2");
+_Static_assert((ANIM_PERIOD_DIVER & (ANIM_PERIOD_DIVER - 1)) == 0, "must be a power of 2");
+
+/* Tile offset of the current pose of a 2-frame animation. */
+static inline uint8_t anim_tile_offset(uint8_t clock, uint8_t period) {
+    return (clock & period) ? ENTITY_TILES_PER_FRAME : 0;
+}
+
+/* First tile of the explosion frame: spark, then burst, then cloud. */
+static uint8_t explosion_tile(uint8_t timer) {
+    if (timer > 2 * EXPLOSION_FRAME_LENGTH) {
+        return SPRITE_TILE_EXPLOSION;
+    }
+    if (timer > EXPLOSION_FRAME_LENGTH) {
+        return SPRITE_TILE_EXPLOSION + ENTITY_TILES_PER_FRAME;
+    }
+    return SPRITE_TILE_EXPLOSION + 2 * ENTITY_TILES_PER_FRAME;
+}
 
 static inline void set_oam(volatile OAM_item_t *oam, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop) {
     oam->y = y;
@@ -783,7 +807,7 @@ static uint8_t render_torpedo(const Torpedo *torpedo, uint8_t sprite) {
     return 1;
 }
 
-static uint8_t render_lane(const Lane *lane, uint8_t first_sprite) {
+static uint8_t render_lane(const Lane *lane, uint8_t clock, uint8_t first_sprite) {
     uint8_t used = 0;
 
     if (lane->alive_mask != 0) {
@@ -792,7 +816,9 @@ static uint8_t render_lane(const Lane *lane, uint8_t first_sprite) {
         int16_t step = lane->member_step;
         uint8_t y = lane->enemy_y;
         uint8_t facing_left = lane->moving_left;
-        uint8_t tile = (lane->enemy_type == ENEMY_SUB) ? SPRITE_TILE_ENEMY_SUB : SPRITE_TILE_SHARK;
+        uint8_t tile = (lane->enemy_type == ENEMY_SUB)
+            ? SPRITE_TILE_ENEMY_SUB + anim_tile_offset(clock, ANIM_PERIOD_PROPELLER)
+            : SPRITE_TILE_SHARK + anim_tile_offset(clock, ANIM_PERIOD_SHARK);
         int16_t x = lane->leader_x;
         for (uint8_t bit = 1; bit <= alive; bit <<= 1, x += step) {
             if (alive & bit) {
@@ -801,7 +827,8 @@ static uint8_t render_lane(const Lane *lane, uint8_t first_sprite) {
         }
     }
     if (lane->diver_active) {
-        used += render_entity(SPRITE_TILE_DIVER, lane->diver_x, lane->base_y, lane->moving_left,
+        used += render_entity(SPRITE_TILE_DIVER + anim_tile_offset(clock, ANIM_PERIOD_DIVER),
+                              lane->diver_x, lane->base_y, lane->moving_left,
                               first_sprite + used);
     }
     used += render_torpedo(&lane->torpedo, first_sprite + used);
@@ -810,6 +837,7 @@ static uint8_t render_lane(const Lane *lane, uint8_t first_sprite) {
 
 void game_render(GameState *game) {
     const Player *player = &game->player;
+    uint8_t clock = game->frame;
     uint8_t next_sprite = 0;
 
     /* First, while still in VBlank (see game.h). */
@@ -823,21 +851,23 @@ void game_render(GameState *game) {
 
     /* Lowest OAM slots win when a scanline overflows, so the player goes first. */
     if (player->state != PLAYER_DYING) {
-        next_sprite += render_entity(SPRITE_TILE_PLAYER_SUB, fixed_to_pixel(player->x),
+        next_sprite += render_entity(SPRITE_TILE_PLAYER_SUB + anim_tile_offset(clock, ANIM_PERIOD_PROPELLER),
+                                     fixed_to_pixel(player->x),
                                      (uint8_t)fixed_to_pixel(player->y), player->facing_left,
                                      next_sprite);
     } else if ((player->state_timer / (uint8_t)EXPLOSION_BLINK_FRAMES) & 1) {
-        next_sprite += render_entity(SPRITE_TILE_EXPLOSION, fixed_to_pixel(player->x),
+        next_sprite += render_entity(explosion_tile(player->state_timer), fixed_to_pixel(player->x),
                                      (uint8_t)fixed_to_pixel(player->y), player->facing_left,
                                      next_sprite);
     }
     next_sprite += render_torpedo(&game->player_torpedo, next_sprite);
     if (game->patrol.active) {
-        next_sprite += render_entity(SPRITE_TILE_ENEMY_SUB, game->patrol.x, PATROL_Y,
+        next_sprite += render_entity(SPRITE_TILE_ENEMY_SUB + anim_tile_offset(clock, ANIM_PERIOD_PROPELLER),
+                                     game->patrol.x, PATROL_Y,
                                      game->patrol.moving_left, next_sprite);
     }
     for (uint8_t i = 0; i < LANE_COUNT; i++) {
-        next_sprite += render_lane(&game->lanes[i], next_sprite);
+        next_sprite += render_lane(&game->lanes[i], clock, next_sprite);
     }
     hide_sprites_range(next_sprite, MAX_HARDWARE_SPRITES);
 }

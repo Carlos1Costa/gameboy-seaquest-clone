@@ -11,6 +11,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
 from pyboy import PyBoy
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,11 +26,23 @@ SCREEN_SPRITE_OFFSET_X = 8   # hardware sprite origin vs. the top-left of the sc
 SCREEN_SPRITE_OFFSET_Y = 16
 S_FLIPX = 0x20
 
-# VRAM tile numbers, from SpriteTile and BackgroundTile in game.c.
-SPRITE_TILE_PLAYER = 0
-SPRITE_TILE_TORPEDO = 2
-SPRITE_TILE_ENEMY_SUB = 5
-SPRITE_TILE_EXPLOSION = 9
+# Sprite sheets in VRAM order, as in SpriteTile in game.c.
+SPRITE_SHEETS = ["player_sub", "torpedo", "shark", "enemy_sub", "diver", "explosion"]
+
+
+def sprite_tile_ranges():
+    """{sheet: range of its VRAM tiles}, from the PNG widths: frames shift the offsets."""
+    ranges, first = {}, 0
+    for sheet in SPRITE_SHEETS:
+        tiles = Image.open(ROOT / "res" / f"{sheet}.png").width // 8
+        ranges[sheet] = range(first, first + tiles)
+        first += tiles
+    return ranges
+
+
+SPRITE_TILES = sprite_tile_ranges()
+
+# Background tile numbers, from BackgroundTile in game.c.
 BG_TILE_WATER = 0
 BG_TILE_HUD = 1
 BG_TILE_O2_FULL = 5
@@ -400,6 +413,11 @@ class Game:
     def banner_text_row(self):
         return self.bg_row(BANNER_TEXT_ROW)
 
+    def sprites_of(self, sheet):
+        """The on-screen hardware sprites using a sheet's tiles, left to right."""
+        tiles = SPRITE_TILES[sheet]
+        return sorted((s for s in self.sprites() if s.tile in tiles), key=lambda s: s.x)
+
     def channels_playing(self):
         """NR52 bits 0-3; needs Game(sound=True)."""
         return self.m[NR52] & 0x0F
@@ -407,11 +425,16 @@ class Game:
     def track_sounds(self):
         """Records each effect passed to sound_play in self.sounds."""
         self.sounds = []
+        self.refill_levels = []
         self.pb.hook_register(0, self.symbols["_sound_play"], self._on_sound_play, None)
+        self.pb.hook_register(0, self.symbols["_sound_play_oxygen_refill"], self._on_refill_sound, None)
 
     def _on_sound_play(self, _):
         # SDCC passes the first 8-bit argument in A.
         self.sounds.append(self.pb.register_file.A)
+
+    def _on_refill_sound(self, _):
+        self.refill_levels.append(self.pb.register_file.A)
 
     def screenshot(self, path):
         self.pb.screen.image.save(path)

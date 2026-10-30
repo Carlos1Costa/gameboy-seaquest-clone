@@ -8,7 +8,7 @@ from PIL import Image
 from harness import ROOT
 
 SCRIPT = ROOT / "tools" / "make_art.py"
-ENTITIES = ["player_sub", "shark", "enemy_sub", "diver", "explosion"]
+ENTITY_FRAMES = {"player_sub": 2, "shark": 2, "enemy_sub": 2, "diver": 2, "explosion": 3}
 
 
 def make_art(out, *options):
@@ -16,9 +16,9 @@ def make_art(out, *options):
                           capture_output=True, text=True)
 
 
-@pytest.mark.parametrize("name", ENTITIES)
-def test_entity_sprites_are_16x8(name):
-    assert Image.open(ROOT / "res" / f"{name}.png").size == (16, 8)
+@pytest.mark.parametrize("name, frames", ENTITY_FRAMES.items())
+def test_entity_sheets_hold_their_16x8_frames(name, frames):
+    assert Image.open(ROOT / "res" / f"{name}.png").size == (16 * frames, 8)
 
 
 def test_torpedo_sprite_is_8x8():
