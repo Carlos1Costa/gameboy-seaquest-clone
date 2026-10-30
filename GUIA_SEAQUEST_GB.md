@@ -32,6 +32,13 @@ Carlos definiu princípios de engenharia que valem para **todo** o projeto. Siga
 - Funções curtas e com propósito único, mas sem criar indireção desnecessária.
 - Antes de otimizar, medir. Em C com SDCC, **CPU também é gargalo** (ver seção 6.1) — não só VRAM/sprites por linha.
 
+### 1.4. Testes acompanham o código
+- O projeto mantém uma suíte de testes própria em `tests/`, que roda a ROM real no emulador PyBoy, sem janela. Guia completo em [tests/README.md](tests/README.md).
+- **Toda feature ou correção entra com seus testes**, no mesmo commit. Bug corrigido ganha um teste que falharia antes da correção.
+- `make test` precisa passar antes de cada commit.
+- Um teste novo deve ser visto falhando ao menos uma vez (quebrando o código de propósito): teste que não consegue falhar não protege nada.
+- Testes não fixam valores de tuning: leem de `game.h` via `tests/layout_probe.c`. Ajustar um número no playtest não deve quebrar a suíte.
+
 ---
 
 ## 2. Plataforma-alvo e restrições de hardware
@@ -224,6 +231,8 @@ seaquest/
 │   │                   #   spawner, oxigênio, surfacing, score, waves, patrol, HUD
 │   ├── collision.c/.h  # AABB + checagens (único lugar de colisão)
 │   └── sound.c / .h    # efeitos sonoros (escritas diretas no APU)
+├── tests/               # suíte de testes (PyBoy + pytest), ver tests/README.md
+├── requirements.txt     # dependências Python dos testes (versões fixas)
 ├── res/                 # PNGs-fonte da pixelart (entrada do png2asset; versionados)
 └── build/               # gerado pelo make (não versionado)
     └── assets/          # .c/.h gerados pelo png2asset a partir de res/*.png
@@ -254,6 +263,7 @@ seaquest/
 
 O orçamento é de **154 scanlines por frame** (70.224 ciclos de clock; ~17.500 ciclos de máquina). Em C com SDCC, cada comando simples custa da ordem de 40 ciclos de máquina, porque a CPU tem poucos registradores e as variáveis vivem na pilha. Regras que saíram das medições (e que devemos seguir daqui em diante):
 
+- **`tests/test_performance.py` falha se o orçamento estourar**, e `make test` imprime o pior frame de cada cenário. Para investigar, `make profile` mostra o custo por função e por linha de C.
 - **Medir sempre o pior caso**, não a média. Meta: pior frame real ≤ ~85–90% do orçamento, deixando folga para os próximos epics. Estado após a otimização: pior frame observado em jogo ~138/154 scanlines; cena vazia ~55.
 - **Não percorrer slots vazios.** Loops sobre arrays com flag `active` custavam caro mesmo sem nada ativo; preferir máscaras de bits que terminam após o último elemento vivo (ver `Lane.alive_mask`).
 - **Evitar comparações de 16 bits com sinal** em caminhos quentes: a CPU não tem flags de sinal e cada uma vira ~20 instruções. Usar `is_in_range()` (uma comparação sem sinal) ou testes de sinal (`x < 0`).
@@ -272,6 +282,7 @@ O orçamento é de **154 scanlines por frame** (70.224 ciclos de clock; ~17.500 
 - **GBDK-2020** (binário Linux x64) + **SDCC** (vem junto).
 - **png2asset** (vem no GBDK-2020, em `gbdk/bin/`) para converter PNG → tiles de sprites/tilesets. Chamado automaticamente pelo `Makefile` (ver seção 6).
 - **make** para build.
+- **Python 3** com `venv`, para a suíte de testes: `make test-env` cria o ambiente em `.env/` com as dependências de `requirements.txt` (PyBoy, Pillow, pytest).
 - **Emulador:** mgba-qt (`make run`, ver README.md) para rodar/debugar. No mGBA, o botão A do Game Boy fica na tecla **X** e o B na **Z** (a tecla A do teclado é o L do GBA); BGB/Emulicious nativos no Windows como alternativa de debug.
 - Arquivos do projeto no **filesystem nativo do WSL** (`~/...`), não em `/mnt/c/`, para I/O rápido.
 

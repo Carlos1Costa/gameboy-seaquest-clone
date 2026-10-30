@@ -31,3 +31,7 @@ TestResults.xml
 gbdk/
 build/
 *.ihx
+#Python test environment
+.env/
+__pycache__/
+.pytest_cache/

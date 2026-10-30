@@ -5,6 +5,11 @@
 #   make run    build and run in mgba-qt
 #   make clean  remove build outputs
 #
+#   make test-env   create the Python test environment in .env/
+#   make test       build and run the whole test suite
+#   make test-fast  same, without the long stress runs
+#   make profile    show the costliest C lines during random play
+#
 
 # Change this if GBDK lives somewhere else (ex: GBDK_HOME = /home/user/gbdk/)
 GBDK_HOME = ./gbdk/
@@ -15,6 +20,9 @@ EMULATOR  = mgba-qt
 
 PROJECTNAME = Seaquest
 ROM         = $(PROJECTNAME).gb
+
+VENV   = .env
+PYTHON = $(VENV)/bin/python
 
 BUILDDIR = build
 ASSETDIR = $(BUILDDIR)/assets
@@ -72,8 +80,24 @@ $(BUILDDIR) $(ASSETDIR):
 run: $(ROM)
 	$(EMULATOR) $(ROM)
 
+$(VENV)/.installed: requirements.txt
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip install -r requirements.txt
+	touch $@
+
+test-env: $(VENV)/.installed
+
+test: $(ROM) test-env
+	$(PYTHON) -m pytest
+
+test-fast: $(ROM) test-env
+	$(PYTHON) -m pytest -m "not slow"
+
+profile: $(ROM) test-env
+	$(PYTHON) tests/profile_lines.py
+
 clean:
 	rm -rf $(BUILDDIR) $(ROM) $(PROJECTNAME).map $(PROJECTNAME).noi $(PROJECTNAME).sym $(PROJECTNAME).ihx
 
-.PHONY: all run clean
+.PHONY: all run clean test-env test test-fast profile
 .SECONDARY: $(ASSET_SOURCES) $(ASSET_HEADERS)

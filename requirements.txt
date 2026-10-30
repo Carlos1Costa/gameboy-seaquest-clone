@@ -1,0 +1,6 @@
+# Test suite dependencies (see tests/README.md). Create the environment with:
+#   make test-env
+# PyBoy is pinned exactly: the performance tests use its internal cycle counter.
+pyboy==2.8.1
+pillow==13.0.0
+pytest==9.2.0
