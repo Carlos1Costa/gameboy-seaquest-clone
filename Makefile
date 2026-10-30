@@ -5,10 +5,12 @@
 #   make run    build and run in mgba-qt
 #   make clean  remove build outputs
 #
-#   make test-env   create the Python test environment in .env/
+#   make test-env   create the Python environment in .env/ (tests and tools)
 #   make test       build and run the whole test suite
 #   make test-fast  same, without the long stress runs
 #   make profile    show the costliest C lines during random play
+#   make art        regenerate missing placeholder art in res/
+#                   (FORCE=1 replaces PNGs that differ, final art included)
 #
 
 # Change this if GBDK lives somewhere else (ex: GBDK_HOME = /home/user/gbdk/)
@@ -96,8 +98,11 @@ test-fast: $(ROM) test-env
 profile: $(ROM) test-env
 	$(PYTHON) tests/profile_lines.py
 
+art: test-env
+	$(PYTHON) tools/make_art.py $(if $(FORCE),--force)
+
 clean:
 	rm -rf $(BUILDDIR) $(ROM) $(PROJECTNAME).map $(PROJECTNAME).noi $(PROJECTNAME).sym $(PROJECTNAME).ihx
 
-.PHONY: all run clean test-env test test-fast profile
+.PHONY: all run clean test-env test test-fast profile art
 .SECONDARY: $(ASSET_SOURCES) $(ASSET_HEADERS)

@@ -1,4 +1,5 @@
-# Test suite dependencies (see tests/README.md). Create the environment with:
+# Python dependencies of the test suite (see tests/README.md) and of
+# tools/make_art.py (Pillow). Create the environment with:
 #   make test-env
 # PyBoy is pinned exactly: the performance tests use its internal cycle counter.
 pyboy==2.8.1

@@ -232,7 +232,8 @@ seaquest/
 │   ├── collision.c/.h  # AABB + checagens (único lugar de colisão)
 │   └── sound.c / .h    # efeitos sonoros (escritas diretas no APU)
 ├── tests/               # suíte de testes (PyBoy + pytest), ver tests/README.md
-├── requirements.txt     # dependências Python dos testes (versões fixas)
+├── tools/               # make_art.py: gera a pixelart placeholder de res/
+├── requirements.txt     # dependências Python de testes e ferramentas (versões fixas)
 ├── res/                 # PNGs-fonte da pixelart (entrada do png2asset; versionados)
 └── build/               # gerado pelo make (não versionado)
     └── assets/          # .c/.h gerados pelo png2asset a partir de res/*.png
@@ -242,6 +243,7 @@ seaquest/
 - Os `.c/.h` de assets **não são versionados**: o `Makefile` roda o `png2asset` (que vem no GBDK) sobre cada PNG de `res/` e gera em `build/assets/`. Para adicionar um asset, inclua o PNG na lista `SPRITE_PNGS` ou `TILESET_PNGS` do `Makefile`.
 - **Sprites** (`SPRITE_PNGS`): convertidos só como tiles (`-spr8x8 -sprite_no_optimize -tiles_only`), da esquerda para a direita: uma entidade 16×8 vira exatamente 2 tiles (esquerdo, direito) e o torpedo 1 tile. `-sprite_no_optimize` impede que tiles repetidos/vazios sejam removidos, então a ordem é garantida (há `_Static_assert` no código conferindo a contagem). O render escreve direto na shadow OAM — a rotina genérica de metasprites do GBDK custava caro demais. O espelhamento esquerda/direita é feito em runtime (flag `S_FLIPX` + troca da ordem dos 2 tiles), então desenhamos só a versão virada para a direita.
 - **Tilesets** (`TILESET_PNGS`): faixa horizontal de tiles 8×8 exportada sem deduplicação; a ordem dos tiles da esquerda para a direita **é** o índice na VRAM e precisa bater com o `enum` correspondente em `game.c`.
+- **Arte placeholder:** os PNGs atuais de `res/` são gerados por `tools/make_art.py`, onde a arte está escrita como texto. Ele roda só por `make art`, nunca no build, e recria apenas o que falta. Se um PNG diferir do placeholder (arte final, por exemplo), o script não grava nada e avisa; `make art FORCE=1` substitui mesmo assim. Tile novo no tileset exige atualizar `tools/make_art.py`, `BackgroundTile`/`letter_glyphs` em `game.c` e `tests/harness.py`.
 - **Formato dos PNGs:** indexado com 4 cores na ordem branco, cinza claro, cinza escuro, preto (índices 0–3). Em sprites, o índice 0 é transparente. Tiles de HUD usam cinza claro (índice 1) como fundo, que é a cor das faixas de HUD.
 
 **Notas de design:**
@@ -282,7 +284,7 @@ O orçamento é de **154 scanlines por frame** (70.224 ciclos de clock; ~17.500 
 - **GBDK-2020** (binário Linux x64) + **SDCC** (vem junto).
 - **png2asset** (vem no GBDK-2020, em `gbdk/bin/`) para converter PNG → tiles de sprites/tilesets. Chamado automaticamente pelo `Makefile` (ver seção 6).
 - **make** para build.
-- **Python 3** com `venv`, para a suíte de testes: `make test-env` cria o ambiente em `.env/` com as dependências de `requirements.txt` (PyBoy, Pillow, pytest).
+- **Python 3** com `venv`, para a suíte de testes e `tools/make_art.py`: `make test-env` cria o ambiente em `.env/` com as dependências de `requirements.txt` (PyBoy, Pillow, pytest).
 - **Emulador:** mgba-qt (`make run`, ver README.md) para rodar/debugar. No mGBA, o botão A do Game Boy fica na tecla **X** e o B na **Z** (a tecla A do teclado é o L do GBA); BGB/Emulicious nativos no Windows como alternativa de debug.
 - Arquivos do projeto no **filesystem nativo do WSL** (`~/...`), não em `/mnt/c/`, para I/O rápido.
 

@@ -34,6 +34,7 @@ To run part of the suite, or see why a test failed:
 | `test_patrol.py` | Patrol sub (F1.1) |
 | `test_sound.py` | Which effect each event requests (F1.3) |
 | `test_performance.py` | The 60 fps budget and the sprite limit (GUIA section 6.1) |
+| `test_art.py` | PNG format in `res/`, and the safety of `tools/make_art.py` |
 
 The other files are infrastructure:
 
