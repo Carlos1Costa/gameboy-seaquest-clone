@@ -96,6 +96,52 @@ def test_crossing_10000_earns_a_reserve(diving):
     assert game.hud_reserves() == 3
 
 
+def test_every_10000_points_earns_a_reserve_not_just_the_first(diving):
+    game = diving
+    game.reserves = 1
+    for ten_thousands in (1, 2, 3):
+        game.score = ten_thousands * 10000 - 10
+        destroy_one_enemy(game)
+    assert game.reserves == 4
+
+
+def test_no_reserve_without_crossing_10000(diving):
+    game = diving
+    game.score = 10010
+    game.reserves = 2
+    destroy_one_enemy(game)
+    assert game.reserves == 2
+
+
+def test_game_starts_with_three_reserves_on_the_hud(game):
+    game.tick(2)
+    assert game.reserves == 3
+    assert game.hud_reserves() == 3
+
+
+def test_a_game_lasts_four_lives(game):
+    """Three reserves plus the sub in play; surfacing empty costs a life each time."""
+    lives = 0
+    while not game.game_over:
+        game.dive()
+        game.rise()
+        assert game.state == game.k.DYING
+        lives += 1
+        assert game.tick_until(lambda: game.state != game.k.DYING or game.game_over, 200)
+        if not game.game_over:
+            game.wait_active()
+    assert lives == 4
+
+
+def test_hud_shows_six_reserves(diving):
+    game = diving
+    game.score = 9990
+    game.reserves = 5
+    destroy_one_enemy(game)
+    game.tick(2)
+    assert game.hud_reserves() == 6
+
+
 def test_reserves_stop_at_the_maximum(diving):
     game = diving
     game.score = 19990
