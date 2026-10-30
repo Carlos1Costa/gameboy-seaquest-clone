@@ -245,7 +245,8 @@ seaquest/
 │   ├── collision.c/.h  # AABB + checagens (único lugar de colisão)
 │   └── sound.c / .h    # efeitos sonoros (escritas diretas no APU)
 ├── tests/               # suíte de testes (PyBoy + pytest), ver tests/README.md
-├── tools/               # make_art.py: gera a pixelart placeholder de res/
+├── tools/               # make_art.py (arte de res/), make_media.py (imagens do README)
+├── docs/images/         # imagens do README, geradas da ROM por `make media`
 ├── requirements.txt     # dependências Python de testes e ferramentas (versões fixas)
 ├── res/                 # PNGs-fonte da pixelart (entrada do png2asset; versionados)
 └── build/               # gerado pelo make (não versionado)

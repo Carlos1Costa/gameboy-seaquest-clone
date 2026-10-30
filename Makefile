@@ -11,6 +11,7 @@
 #   make profile    show the costliest C lines during random play
 #   make art        regenerate missing placeholder art in res/
 #                   (FORCE=1 replaces PNGs that differ, final art included)
+#   make media      regenerate the README images in docs/images from the ROM
 #
 
 # Change this if GBDK lives somewhere else (ex: GBDK_HOME = /home/user/gbdk/)
@@ -101,8 +102,11 @@ profile: $(ROM) test-env
 art: test-env
 	$(PYTHON) tools/make_art.py $(if $(FORCE),--force)
 
+media: $(ROM) test-env
+	$(PYTHON) tools/make_media.py
+
 clean:
 	rm -rf $(BUILDDIR) $(ROM) $(PROJECTNAME).map $(PROJECTNAME).noi $(PROJECTNAME).sym $(PROJECTNAME).ihx
 
-.PHONY: all run clean test-env test test-fast profile art
+.PHONY: all run clean test-env test test-fast profile art media
 .SECONDARY: $(ASSET_SOURCES) $(ASSET_HEADERS)
